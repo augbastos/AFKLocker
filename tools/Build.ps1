@@ -124,6 +124,13 @@ Invoke-Csc -Target 'winexe' -Output (Join-Path $OutputDirectory 'AFKLockerSetup.
     -References @('System.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll', $coreDll) `
     -Icon $icon -Manifest $manifest
 
+# The watcher is a windowless program: winexe so it never shows a console,
+# even when run with --status from a terminal.
+Invoke-Csc -Target 'winexe' -Output (Join-Path $OutputDirectory 'AFKLockerWatcher.exe') `
+    -Sources (Get-Sources 'src\AFKLocker.Watcher' -IncludeVersionInfo) `
+    -References @('System.dll', 'System.Windows.Forms.dll', 'System.Drawing.dll', $coreDll) `
+    -Icon $icon -Manifest $manifest
+
 $testExe = Join-Path $OutputDirectory 'AFKLocker.Tests.exe'
 Invoke-Csc -Target 'exe' -Output $testExe `
     -Sources (Get-Sources 'tests\AFKLocker.Tests') `
