@@ -231,14 +231,51 @@ namespace AFKLocker.Core
         {
             string path = PathFor(scheme);
             if (!File.Exists(path)) return null;
-            return PowerBackup.Deserialize(File.ReadAllText(path, Encoding.UTF8));
+
+            try
+            {
+                return PowerBackup.Deserialize(File.ReadAllText(path, Encoding.UTF8));
+            }
+            catch (BackupFormatException ex)
+            {
+                // Name the file: the user needs to be able to find it, read the
+                // values by hand, or delete it to get unstuck.
+                throw new BackupFormatException(string.Format(
+                    "{0}{1}The backup file is {2}", ex.Message, Environment.NewLine, path));
+            }
         }
 
+        /// <summary>
+        /// Writes the backup atomically: to a temporary file first, then into
+        /// place.
+        ///
+        /// Writing directly would truncate the existing file before the new
+        /// content lands. An interruption at that moment - a crash, a power
+        /// loss, a full disk - would leave a half-written file, and since this
+        /// file is the only record of the user's original power settings,
+        /// losing it means losing the ability to restore them. Apply also saves
+        /// twice, so a good backup gets rewritten on the second pass.
+        /// </summary>
         public void Save(PowerBackup backup)
         {
             if (backup == null) throw new ArgumentNullException("backup");
             System.IO.Directory.CreateDirectory(_directory);
-            File.WriteAllText(PathFor(backup.Scheme), backup.Serialize(), new UTF8Encoding(false));
+
+            string path = PathFor(backup.Scheme);
+            string temporary = path + ".tmp";
+
+            using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+            {
+                writer.Write(backup.Serialize());
+                writer.Flush();
+                stream.Flush(true);   // through to disk, not just the OS cache
+            }
+
+            if (File.Exists(path))
+                File.Replace(temporary, path, null);
+            else
+                File.Move(temporary, path);
         }
 
         public void Delete(Guid scheme)
