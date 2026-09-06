@@ -157,6 +157,66 @@ namespace AFKLocker.Tests
             }
         }
 
+        [Test("Overwriting a backup leaves a valid file and no temporary behind")]
+        private static void SaveIsAtomic()
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "afklocker-tests-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var store = new FileBackupStore(directory);
+                var scheme = new Guid("66666666-6666-6666-6666-666666666666");
+
+                var first = new PowerBackup { Scheme = scheme, SchemeName = "Balanced" };
+                first.RecordOriginal(PowerSettings.SleepAc.Key, 1800);
+                store.Save(first);
+
+                // Apply saves twice, so overwriting an existing backup is the
+                // normal path, not an edge case.
+                var second = new PowerBackup { Scheme = scheme, SchemeName = "Balanced" };
+                second.RecordOriginal(PowerSettings.SleepAc.Key, 1800);
+                second.RecordOriginal(PowerSettings.LidCloseAc.Key, 1);
+                store.Save(second);
+
+                Assert.Equal(0, Directory.GetFiles(directory, "*.tmp").Length,
+                    "no temporary file is left behind");
+                Assert.Equal(1, Directory.GetFiles(directory, "*.txt").Length,
+                    "exactly one backup file");
+
+                PowerBackup reloaded = store.Load(scheme);
+                Assert.Equal(2, reloaded.Count, "the rewritten file is complete and readable");
+            }
+            finally
+            {
+                if (Directory.Exists(directory)) Directory.Delete(directory, true);
+            }
+        }
+
+        [Test("A truncated backup file is reported with its path, not as a bare parse error")]
+        private static void CorruptFileNamesItself()
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "afklocker-tests-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(directory);
+                var scheme = new Guid("77777777-7777-7777-7777-777777777777");
+                string path = Path.Combine(directory, "power-backup-" + scheme.ToString("D") + ".txt");
+
+                // What a half-written file looks like: the version line never landed.
+                File.WriteAllText(path, "# AFKLocker power settings backup\nsch");
+
+                var store = new FileBackupStore(directory);
+                BackupFormatException error = Assert.Throws<BackupFormatException>(
+                    () => store.Load(scheme), "truncated file");
+
+                Assert.True(error.Message.Contains(path),
+                    "the error names the file so the user can find or delete it");
+            }
+            finally
+            {
+                if (Directory.Exists(directory)) Directory.Delete(directory, true);
+            }
+        }
+
         [Test("Listing backups in a directory that does not exist returns nothing")]
         private static void MissingDirectoryIsNotAnError()
         {

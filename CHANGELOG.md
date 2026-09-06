@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-09-06
+
+### Fixed
+
+- Backup files are now written atomically, to a temporary file that is then moved into place.
+  Writing directly truncated the existing file before the new content landed, so an interruption
+  at that moment - a crash, power loss, or full disk - could leave a half-written file. Since that
+  file is the only record of the user's original power settings, losing it meant losing the
+  ability to restore them. Applying saves twice, so this rewrote a good backup on every run.
+- A backup file that cannot be parsed now reports its full path, so it can be read by hand or
+  deleted to get unstuck, instead of surfacing a bare parse error.
+
 ## [0.1.0] - 2026-09-06
 
 Initial release.
@@ -33,4 +45,5 @@ Initial release.
   covered by tests against simulated machines.
 - Binaries are not code-signed, so SmartScreen will warn on first run.
 
+[0.1.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.1.1
 [0.1.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.1.0
