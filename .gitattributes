@@ -1,0 +1,14 @@
+# Normalise line endings in the repository, keep Windows-native ones in the
+# working tree for the files Windows tooling is fussiest about.
+* text=auto eol=lf
+
+*.ps1 text eol=crlf
+*.iss text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.manifest text eol=crlf
+
+*.png binary
+*.ico binary
+*.exe binary
+*.zip binary
