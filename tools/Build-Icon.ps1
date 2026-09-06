@@ -60,6 +60,9 @@ function Write-SvgMaster {
   <path d="$($Geometry.Body)" fill="$($Colors.Blue)" />
 </svg>
 "@
+    # Force LF: here-strings produce CRLF on Windows, which would make the file
+    # differ from the LF copy stored in git every time it is regenerated.
+    $svg = $svg -replace "`r`n", "`n"
     [System.IO.File]::WriteAllText($Path, $svg, (New-Object System.Text.UTF8Encoding($false)))
     Write-Host "  svg    -> $Path"
 }
