@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and publish (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Build, test and package
+        shell: pwsh
+        run: ./tools/Build.ps1 -Test -Installer -Iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+
+      - name: Assemble release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item build/AFKLocker-*-setup.exe dist/
+
+          # Portable zip: the binaries with no installer, for people who would
+          # rather place them themselves.
+          New-Item -ItemType Directory -Force -Path portable | Out-Null
+          Copy-Item build/AFKLocker.exe, build/AFKLockerSetup.exe, build/AFKLocker.Core.dll, LICENSE, README.md portable/
+          $version = "${{ github.event.inputs.tag || github.ref_name }}" -replace '^v', ''
+          Compress-Archive -Path portable/* -DestinationPath "dist/AFKLocker-$version-portable.zip"
+
+          # Checksums so a download can be verified.
+          Get-ChildItem dist -File | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)"
+          } | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+
+          Get-Content dist/SHA256SUMS.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          draft: false
+          files: |
+            dist/AFKLocker-*-setup.exe
+            dist/AFKLocker-*-portable.zip
+            dist/SHA256SUMS.txt
