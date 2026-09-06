@@ -54,11 +54,15 @@ namespace AFKLocker.Setup
     internal static class Program
     {
         private const string RestoreSilentFlag = "--restore-silent";
+        private const string DisableAutoLockSilentFlag = "--disable-autolock-silent";
 
         [STAThread]
         private static int Main(string[] args)
         {
             args = args ?? new string[0];
+
+            if (HasFlag(args, DisableAutoLockSilentFlag))
+                return DisableAutoLockSilently();
 
             if (HasFlag(args, RestoreSilentFlag))
                 return RestoreSilently();
@@ -72,6 +76,7 @@ namespace AFKLocker.Setup
                     new WindowsPowerConfiguration(),
                     new WindowsPowerInformation(),
                     new FileBackupStore(),
+                    CreateAutoLockManager(),
                     HasFlag(args, ElevationHelper.BatteryFlag)))
                 {
                     Application.Run(form);
@@ -105,6 +110,34 @@ namespace AFKLocker.Setup
                 // so the values can still be restored by hand.
                 return 1;
             }
+        }
+
+        /// <summary>
+        /// Used by the uninstaller: stop the watcher and remove its autostart
+        /// entry, with no UI. Unconditional - removing the program must not
+        /// leave something of it starting at sign-in.
+        /// </summary>
+        private static int DisableAutoLockSilently()
+        {
+            try
+            {
+                CreateAutoLockManager().Cleanup();
+                return 0;
+            }
+            catch (Exception)
+            {
+                // Never block an uninstall on this.
+                return 1;
+            }
+        }
+
+        private static AutoLockManager CreateAutoLockManager()
+        {
+            return new AutoLockManager(
+                new FileSettingsStore(),
+                new RunKeyAutostartRegistry(),
+                new WatcherController(),
+                WatcherController.DefaultWatcherPath);
         }
 
         private static bool HasFlag(string[] args, string flag)
