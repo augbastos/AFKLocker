@@ -259,23 +259,7 @@ namespace AFKLocker.Core
         public void Save(PowerBackup backup)
         {
             if (backup == null) throw new ArgumentNullException("backup");
-            System.IO.Directory.CreateDirectory(_directory);
-
-            string path = PathFor(backup.Scheme);
-            string temporary = path + ".tmp";
-
-            using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
-            using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
-            {
-                writer.Write(backup.Serialize());
-                writer.Flush();
-                stream.Flush(true);   // through to disk, not just the OS cache
-            }
-
-            if (File.Exists(path))
-                File.Replace(temporary, path, null);
-            else
-                File.Move(temporary, path);
+            AtomicFile.WriteAllText(PathFor(backup.Scheme), backup.Serialize());
         }
 
         public void Delete(Guid scheme)
