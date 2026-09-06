@@ -1,0 +1,17 @@
+# Build output
+build/
+*.exe
+*.dll
+*.pdb
+
+# Inno Setup output
+Output/
+
+# Editors
+.vs/
+.idea/
+*.user
+
+# OS
+Thumbs.db
+desktop.ini
