@@ -9,38 +9,58 @@ using AFKLocker.Core;
 namespace AFKLocker.Setup
 {
     /// <summary>
-    /// Shows whether Windows is configured for closed-lid operation, and offers
-    /// to configure it. Read-only until the user presses a button.
+    /// Shows whether Windows is configured for closed-lid operation, and how
+    /// AFKLocker locks the session. Read-only until the user presses something.
+    ///
+    /// The two halves are deliberately separate: keeping the machine running
+    /// with the lid shut and locking when the lid shuts are different
+    /// responsibilities, and conflating them would hide the fact that either
+    /// can be set up without the other.
     /// </summary>
     internal sealed class SetupForm : Form
     {
+        private const int EdgeMargin = 24;
+
         private readonly IPowerConfiguration _power;
         private readonly IPowerInformation _info;
         private readonly IBackupStore _backups;
+        private readonly AutoLockManager _autoLock;
 
+        private readonly Label _readinessHeader = new Label();
         private readonly Label _planLabel = new Label();
         private readonly Panel _checksPanel = new Panel();
         private readonly Label _separator = new Label();
         private readonly Label _summaryLabel = new Label();
         private readonly CheckBox _batteryCheck = new CheckBox();
         private readonly Label _batteryNote = new Label();
+
+        private readonly Label _lockHeader = new Label();
+        private readonly RadioButton _manualRadio = new RadioButton();
+        private readonly Label _manualNote = new Label();
+        private readonly RadioButton _automaticRadio = new RadioButton();
+        private readonly Label _automaticNote = new Label();
+        private readonly Label _watcherStatus = new Label();
+
         private readonly Button _applyButton = new Button();
         private readonly Button _restoreButton = new Button();
         private readonly Button _closeButton = new Button();
 
         private ReadinessReport _report;
+        private bool _updatingMode;
 
-        public SetupForm(IPowerConfiguration power, IPowerInformation info, IBackupStore backups)
-            : this(power, info, backups, false)
+        public SetupForm(IPowerConfiguration power, IPowerInformation info, IBackupStore backups,
+            AutoLockManager autoLock)
+            : this(power, info, backups, autoLock, false)
         {
         }
 
         public SetupForm(IPowerConfiguration power, IPowerInformation info, IBackupStore backups,
-            bool preselectBattery)
+            AutoLockManager autoLock, bool preselectBattery)
         {
             _power = power;
             _info = info;
             _backups = backups;
+            _autoLock = autoLock;
 
             BuildLayout();
             _batteryCheck.Checked = preselectBattery;
@@ -51,9 +71,15 @@ namespace AFKLocker.Setup
         {
             Text = "AFKLocker Setup";
             Font = new Font("Segoe UI", 9F);
+            BackColor = Color.White;
+            ClientSize = new Size(560, 740);
+            MinimumSize = new Size(540, 560);
+            StartPosition = FormStartPosition.CenterScreen;
+            MaximizeBox = false;
+            FormBorderStyle = FormBorderStyle.FixedSingle;
+            AutoScaleMode = AutoScaleMode.Dpi;
+            AutoScroll = true;
 
-            // WinForms defaults to its own icon, not the one compiled into the
-            // executable, which leaves a generic icon in the title bar and Alt+Tab.
             try
             {
                 Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -63,12 +89,7 @@ namespace AFKLocker.Setup
                 // Cosmetic only - never stop the window opening over an icon.
             }
 
-            BackColor = Color.White;
-            ClientSize = new Size(560, 560);
-            MinimumSize = new Size(520, 480);
-            StartPosition = FormStartPosition.CenterScreen;
-            MaximizeBox = false;
-            AutoScaleMode = AutoScaleMode.Dpi;
+            int width = ClientSize.Width - (EdgeMargin * 2);
 
             var title = new Label
             {
@@ -76,7 +97,7 @@ namespace AFKLocker.Setup
                 Font = new Font("Segoe UI", 16F, FontStyle.Regular),
                 ForeColor = Color.FromArgb(23, 23, 23),
                 AutoSize = true,
-                Location = new Point(24, 20)
+                Location = new Point(EdgeMargin, 20)
             };
 
             var subtitle = new Label
@@ -84,59 +105,68 @@ namespace AFKLocker.Setup
                 Text = "Lock your PC. Close the lid. Keep it running.",
                 ForeColor = Color.FromArgb(94, 94, 94),
                 AutoSize = true,
-                Location = new Point(26, 52)
+                Location = new Point(EdgeMargin + 2, 52)
             };
 
+            StyleSectionHeader(_readinessHeader, "CLOSED-LID READINESS");
             _planLabel.ForeColor = Color.FromArgb(94, 94, 94);
             _planLabel.AutoSize = true;
-            _planLabel.Location = new Point(26, 84);
 
-            _checksPanel.Location = new Point(24, 112);
-            _checksPanel.Size = new Size(ClientSize.Width - 48, 230);
+            _checksPanel.Width = width;
+            _checksPanel.Height = 200;
             _checksPanel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-            _checksPanel.AutoScroll = true;
 
             _separator.BorderStyle = BorderStyle.Fixed3D;
             _separator.Height = 2;
-            _separator.Location = new Point(24, 350);
-            _separator.Width = ClientSize.Width - 48;
+            _separator.Width = width;
             _separator.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
             _summaryLabel.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
             _summaryLabel.AutoSize = true;
-            _summaryLabel.Location = new Point(24, 364);
 
             _batteryCheck.Text = "Also keep running on battery";
             _batteryCheck.AutoSize = true;
-            _batteryCheck.Location = new Point(26, 400);
             _batteryCheck.CheckedChanged += (s, e) => UpdateButtons();
 
-            _batteryNote.Text =
-                "Off by default. On battery this keeps the machine awake with the lid closed, " +
-                "which drains the battery and can overheat in a bag or drawer.";
-            _batteryNote.ForeColor = Color.FromArgb(94, 94, 94);
-            _batteryNote.Location = new Point(44, 422);
-            // AutoSize with a width cap so the note grows to however many lines
-            // it needs and Bottom stays accurate for the layout pass.
-            _batteryNote.AutoSize = true;
-            _batteryNote.MaximumSize = new Size(ClientSize.Width - 72, 0);
+            StyleNote(_batteryNote, width - 20,
+                "Off by default. On battery this keeps the machine awake with the lid closed, "
+                + "which drains the battery and can overheat in a bag or drawer.");
+
+            StyleSectionHeader(_lockHeader, "LOCK BEHAVIOUR");
+
+            _manualRadio.Text = "Manual";
+            _manualRadio.AutoSize = true;
+            _manualRadio.Checked = true;
+            _manualRadio.CheckedChanged += OnModeChanged;
+            StyleNote(_manualNote, width - 20, "Double-click AFKLocker before closing the lid. "
+                                               + "Nothing of AFKLocker stays running.");
+
+            _automaticRadio.Text = "Automatic";
+            _automaticRadio.AutoSize = true;
+            _automaticRadio.CheckedChanged += OnModeChanged;
+            StyleNote(_automaticNote, width - 20,
+                "Lock Windows automatically whenever the laptop lid closes. A small background "
+                + "watcher runs while you are signed in. Opening the lid never unlocks anything.");
+
+            _watcherStatus.AutoSize = false;
+            _watcherStatus.Width = width - 20;
+            _watcherStatus.Height = 34;
+            _watcherStatus.ForeColor = Color.FromArgb(94, 94, 94);
+            _watcherStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
             _applyButton.Text = "Apply configuration";
             _applyButton.Size = new Size(160, 32);
-            _applyButton.Location = new Point(24, ClientSize.Height - 52);
-            _applyButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _applyButton.Anchor = AnchorStyles.Top | AnchorStyles.Left;
             _applyButton.Click += OnApplyClicked;
 
             _restoreButton.Text = "Restore previous";
             _restoreButton.Size = new Size(140, 32);
-            _restoreButton.Location = new Point(192, ClientSize.Height - 52);
-            _restoreButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _restoreButton.Anchor = AnchorStyles.Top | AnchorStyles.Left;
             _restoreButton.Click += OnRestoreClicked;
 
             _closeButton.Text = "Close";
             _closeButton.Size = new Size(100, 32);
-            _closeButton.Location = new Point(ClientSize.Width - 124, ClientSize.Height - 52);
-            _closeButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+            _closeButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             _closeButton.Click += (s, e) => Close();
 
             AcceptButton = _closeButton;
@@ -144,9 +174,87 @@ namespace AFKLocker.Setup
 
             Controls.AddRange(new Control[]
             {
-                title, subtitle, _planLabel, _checksPanel, _separator, _summaryLabel,
-                _batteryCheck, _batteryNote, _applyButton, _restoreButton, _closeButton
+                title, subtitle,
+                _readinessHeader, _planLabel, _checksPanel, _separator, _summaryLabel,
+                _batteryCheck, _batteryNote,
+                _lockHeader, _manualRadio, _manualNote, _automaticRadio, _automaticNote, _watcherStatus,
+                _applyButton, _restoreButton, _closeButton
             });
+        }
+
+        private void StyleSectionHeader(Label label, string text)
+        {
+            label.Text = text;
+            label.Font = new Font("Segoe UI", 8F, FontStyle.Bold);
+            label.ForeColor = Color.FromArgb(120, 120, 120);
+            label.AutoSize = true;
+        }
+
+        private static void StyleNote(Label label, int width, string text)
+        {
+            label.Text = text;
+            label.ForeColor = Color.FromArgb(94, 94, 94);
+            label.AutoSize = true;
+            label.MaximumSize = new Size(width, 0);
+        }
+
+        /// <summary>
+        /// Lays everything out top to bottom. Doing this in code rather than
+        /// with fixed coordinates keeps the window correct when a machine
+        /// produces an extra check, or a longer message.
+        /// </summary>
+        private void PerformVerticalLayout(int checksContentHeight)
+        {
+            const int MaxChecksHeight = 300;
+            int y = 88;
+
+            _readinessHeader.Location = new Point(EdgeMargin, y);
+            y = _readinessHeader.Bottom + 8;
+
+            _planLabel.Location = new Point(EdgeMargin, y);
+            y = _planLabel.Bottom + 8;
+
+            _checksPanel.Location = new Point(EdgeMargin, y);
+            _checksPanel.Height = Math.Min(Math.Max(checksContentHeight, 60), MaxChecksHeight);
+            _checksPanel.AutoScroll = checksContentHeight > MaxChecksHeight;
+            y = _checksPanel.Bottom + 10;
+
+            _separator.Location = new Point(EdgeMargin, y);
+            y = _separator.Bottom + 12;
+
+            _summaryLabel.Location = new Point(EdgeMargin, y);
+            y = _summaryLabel.Bottom + 14;
+
+            _batteryCheck.Location = new Point(EdgeMargin + 2, y);
+            y = _batteryCheck.Bottom + 4;
+
+            _batteryNote.Location = new Point(EdgeMargin + 20, y);
+            y = _batteryNote.Bottom + 24;
+
+            _lockHeader.Location = new Point(EdgeMargin, y);
+            y = _lockHeader.Bottom + 10;
+
+            _manualRadio.Location = new Point(EdgeMargin + 2, y);
+            y = _manualRadio.Bottom + 2;
+            _manualNote.Location = new Point(EdgeMargin + 20, y);
+            y = _manualNote.Bottom + 12;
+
+            _automaticRadio.Location = new Point(EdgeMargin + 2, y);
+            y = _automaticRadio.Bottom + 2;
+            _automaticNote.Location = new Point(EdgeMargin + 20, y);
+            y = _automaticNote.Bottom + 8;
+
+            _watcherStatus.Location = new Point(EdgeMargin + 20, y);
+            y = _watcherStatus.Bottom + 20;
+
+            int buttonRow = y;
+            _applyButton.Location = new Point(EdgeMargin, buttonRow);
+            _restoreButton.Location = new Point(_applyButton.Right + 8, buttonRow);
+            _closeButton.Location = new Point(ClientSize.Width - EdgeMargin - _closeButton.Width, buttonRow);
+
+            int desired = buttonRow + _applyButton.Height + 20;
+            int available = Screen.FromControl(this).WorkingArea.Height - 80;
+            ClientSize = new Size(ClientSize.Width, Math.Min(desired, Math.Max(available, 400)));
         }
 
         private void Refresh(bool showErrors)
@@ -157,13 +265,15 @@ namespace AFKLocker.Setup
                 _report = ReadinessEvaluator.Evaluate(snapshot);
 
                 _planLabel.Text = "Power plan: " + (snapshot.SchemeName ?? snapshot.Scheme.ToString("D"));
-                RenderChecks(_report);
+                int contentHeight = RenderChecks(_report);
 
                 _summaryLabel.Text = _report.Summary;
                 _summaryLabel.ForeColor = _report.IsReady
                     ? Color.FromArgb(16, 124, 16)
                     : Color.FromArgb(196, 43, 28);
 
+                RefreshLockBehaviour();
+                PerformVerticalLayout(contentHeight);
                 UpdateButtons();
             }
             catch (Exception ex)
@@ -173,13 +283,15 @@ namespace AFKLocker.Setup
                 _summaryLabel.Text = "Could not read power settings";
                 _summaryLabel.ForeColor = Color.FromArgb(196, 43, 28);
                 _applyButton.Enabled = false;
+                RefreshLockBehaviour();
+                PerformVerticalLayout(60);
                 if (showErrors)
                     ShowMessage("AFKLocker could not read this machine's power configuration.\r\n\r\n"
                                 + ex.Message, MessageBoxIcon.Warning);
             }
         }
 
-        private void RenderChecks(ReadinessReport report)
+        private int RenderChecks(ReadinessReport report)
         {
             _checksPanel.SuspendLayout();
             foreach (Control existing in _checksPanel.Controls.Cast<Control>().ToList())
@@ -205,27 +317,117 @@ namespace AFKLocker.Setup
                 y += row.Height;
             }
             _checksPanel.ResumeLayout();
-            LayoutBelowChecks(y);
+            return y;
         }
 
-        /// <summary>
-        /// Positions everything under the checks list and sizes the window to
-        /// its content, so a machine with an extra warning does not get a
-        /// scrollbar and a machine with fewer checks does not get a gap.
-        /// </summary>
-        private void LayoutBelowChecks(int contentHeight)
+        // ------------------------------------------------------------ lock mode ---
+
+        private void RefreshLockBehaviour()
         {
-            const int MaxChecksHeight = 320;
-            _checksPanel.Height = Math.Min(Math.Max(contentHeight, 60), MaxChecksHeight);
+            AutoLockStatus status = _autoLock.GetStatus();
 
-            _separator.Top = _checksPanel.Bottom + 12;
-            _summaryLabel.Top = _separator.Top + 14;
-            _batteryCheck.Top = _summaryLabel.Bottom + 16;
-            _batteryNote.Top = _batteryCheck.Bottom + 4;
+            _updatingMode = true;
+            _manualRadio.Checked = status.Mode == LockMode.Manual;
+            _automaticRadio.Checked = status.Mode == LockMode.Automatic;
+            _updatingMode = false;
 
-            int desiredHeight = _batteryNote.Bottom + 24 + _applyButton.Height + 20;
-            ClientSize = new Size(ClientSize.Width, desiredHeight);
+            _automaticRadio.Enabled = status.WatcherInstalled;
+            _watcherStatus.Text = DescribeWatcher(status);
+            _watcherStatus.ForeColor = status.Mode == LockMode.Automatic && !status.WatcherRunning
+                ? Color.FromArgb(196, 43, 28)
+                : Color.FromArgb(94, 94, 94);
         }
+
+        private string DescribeWatcher(AutoLockStatus status)
+        {
+            if (!status.WatcherInstalled)
+                return "Automatic lock is unavailable: AFKLockerWatcher.exe was not found next to this program.";
+
+            if (status.Mode == LockMode.Manual)
+                return "Watcher: not running. Nothing of AFKLocker is resident in manual mode.";
+
+            var text = new StringBuilder();
+            text.Append(status.WatcherRunning
+                ? "Watcher: running, and starts when you sign in."
+                : "Watcher: NOT running, though automatic mode is on. Sign out and back in, or re-select Automatic.");
+
+            // The two responsibilities are separate, and saying so is the point:
+            // automatic locking works regardless of the power settings, but the
+            // machine may still sleep afterwards on battery.
+            if (_report != null)
+            {
+                ReadinessCheck battery = _report.Find(ReadinessEvaluator.BatteryCheckId);
+                if (battery != null && battery.Status == CheckStatus.Optional
+                    && battery.Detail.IndexOf("On battery,", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    text.Append("\r\nAutomatic lock will still work on battery, but Windows may sleep "
+                                + "after the lid closes unless you also configure battery above.");
+                }
+            }
+
+            return text.ToString();
+        }
+
+        private void OnModeChanged(object sender, EventArgs e)
+        {
+            if (_updatingMode) return;
+
+            // Only react to the radio that just became checked.
+            var radio = sender as RadioButton;
+            if (radio == null || !radio.Checked) return;
+
+            if (radio == _automaticRadio)
+                EnableAutomatic();
+            else
+                DisableAutomatic();
+        }
+
+        private void EnableAutomatic()
+        {
+            if (MessageBox.Show(this,
+                    "Turn on automatic locking?\r\n\r\n"
+                    + "AFKLocker will start a small background watcher when you sign in. When the "
+                    + "laptop lid closes, it locks Windows. Opening the lid never unlocks anything.\r\n\r\n"
+                    + "The watcher does not change power settings and does not keep the machine "
+                    + "awake by itself - that is what the settings above do.\r\n\r\n"
+                    + "Never leave a running, lid-closed laptop in a bag, sleeve or drawer.",
+                    "AFKLocker Setup", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+            {
+                RefreshLockBehaviour();
+                return;
+            }
+
+            try
+            {
+                if (!_autoLock.Enable())
+                    ShowMessage("Could not start the watcher: AFKLockerWatcher.exe was not found "
+                                + "next to this program.", MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                ShowMessage("Could not turn on automatic locking.\r\n\r\n" + ex.Message, MessageBoxIcon.Warning);
+            }
+
+            RefreshLockBehaviour();
+        }
+
+        private void DisableAutomatic()
+        {
+            try
+            {
+                if (!_autoLock.Disable())
+                    ShowMessage("Automatic locking is off, but the watcher did not stop in time. "
+                                + "It will not start again when you sign in.", MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                ShowMessage("Could not turn off automatic locking.\r\n\r\n" + ex.Message, MessageBoxIcon.Warning);
+            }
+
+            RefreshLockBehaviour();
+        }
+
+        // -------------------------------------------------------- power settings ---
 
         private void UpdateButtons()
         {
