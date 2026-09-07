@@ -15,6 +15,16 @@
     Build the Inno Setup installer as well. Requires ISCC.exe on PATH or in the
     usual install locations, or the path given by -Iscc.
 
+.PARAMETER Sign
+    Authenticode-sign the binaries, and the installer if one is built. Needs
+    AFKLOCKER_SIGNING_CERTIFICATE and AFKLOCKER_SIGNING_PASSWORD in the
+    environment; without them it is a no-op, so a normal build is unaffected.
+
+.PARAMETER RequireSigning
+    Turn a skipped signature into a build failure. The release workflow passes
+    this when the signing secrets exist, so a broken signing setup cannot
+    silently publish unsigned binaries.
+
 .EXAMPLE
     pwsh -File tools/Build.ps1 -Test
 #>
@@ -23,7 +33,16 @@ param(
     [switch]$Test,
     [switch]$Installer,
     [string]$Iscc,
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+
+    # Sign the binaries and installer. Without a certificate configured this
+    # does nothing; with -RequireSigning it fails instead of quietly skipping.
+    [switch]$Sign,
+    [switch]$RequireSigning,
+
+    # Testing only: accept a signature from an untrusted (self-signed)
+    # certificate, so the signing path can be exercised without a real one.
+    [switch]$AllowUntrustedSigningRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -104,7 +123,8 @@ $manifest = Join-Path $src 'app.manifest'
 # a list.
 function Get-Sources {
     param([string]$Directory, [switch]$IncludeVersionInfo)
-    $files = @(Get-ChildItem (Join-Path $root $Directory) -Filter *.cs | ForEach-Object { $_.FullName })
+    # -Recurse so subfolders (Core\Diagnostics) are picked up.
+    $files = @(Get-ChildItem (Join-Path $root $Directory) -Filter *.cs -Recurse | ForEach-Object { $_.FullName })
     if ($IncludeVersionInfo) { $files = $files + @($versionInfo) }
     return $files
 }
@@ -112,7 +132,8 @@ function Get-Sources {
 $coreDll = Join-Path $OutputDirectory 'AFKLocker.Core.dll'
 Invoke-Csc -Target 'library' -Output $coreDll `
     -Sources (Get-Sources 'src\AFKLocker.Core' -IncludeVersionInfo) `
-    -References @('System.dll')
+    -References @('System.dll', 'System.Core.dll', 'System.IO.Compression.dll',
+                  'System.IO.Compression.FileSystem.dll')
 
 Invoke-Csc -Target 'winexe' -Output (Join-Path $OutputDirectory 'AFKLocker.exe') `
     -Sources (Get-Sources 'src\AFKLocker.App' -IncludeVersionInfo) `
@@ -134,7 +155,24 @@ Invoke-Csc -Target 'winexe' -Output (Join-Path $OutputDirectory 'AFKLockerWatche
 $testExe = Join-Path $OutputDirectory 'AFKLocker.Tests.exe'
 Invoke-Csc -Target 'exe' -Output $testExe `
     -Sources (Get-Sources 'tests\AFKLocker.Tests') `
-    -References @('System.dll', 'System.Core.dll', $coreDll)
+    -References @('System.dll', 'System.Core.dll', 'System.IO.Compression.dll',
+                  'System.IO.Compression.FileSystem.dll', $coreDll)
+
+# ----------------------------------------------------------------- signing ----
+# Before the installer, so the files it packages are the signed ones.
+$signScript = Join-Path $PSScriptRoot 'Sign.ps1'
+if ($Sign -or $RequireSigning) {
+    Write-Host ""
+    Write-Host "Signing binaries"
+    $binaries = @(
+        (Join-Path $OutputDirectory 'AFKLocker.exe')
+        (Join-Path $OutputDirectory 'AFKLockerSetup.exe')
+        (Join-Path $OutputDirectory 'AFKLockerWatcher.exe')
+        (Join-Path $OutputDirectory 'AFKLocker.Core.dll')
+    )
+    & $signScript -Files $binaries -Require:$RequireSigning -AllowUntrustedRoot:$AllowUntrustedSigningRoot
+    if ($LASTEXITCODE -ne 0) { throw "Signing failed." }
+}
 
 # ------------------------------------------------------------------ tests ----
 if ($Test) {
@@ -164,6 +202,16 @@ if ($Installer) {
     $script = Join-Path $root 'installer\AFKLocker.iss'
     & $Iscc "/O$OutputDirectory" $script
     if ($LASTEXITCODE -ne 0) { throw "Installer build failed." }
+
+    if ($Sign -or $RequireSigning) {
+        $setupExe = Get-ChildItem $OutputDirectory -Filter 'AFKLocker-*-setup.exe' |
+            Select-Object -First 1
+        if (-not $setupExe) { throw "The installer was not found after building it." }
+        Write-Host ""
+        Write-Host "Signing installer"
+        & $signScript -Files @($setupExe.FullName) -Require:$RequireSigning -AllowUntrustedRoot:$AllowUntrustedSigningRoot
+        if ($LASTEXITCODE -ne 0) { throw "Signing the installer failed." }
+    }
 }
 
 Write-Host ""
