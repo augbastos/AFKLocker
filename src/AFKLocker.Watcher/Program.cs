@@ -21,10 +21,18 @@ namespace AFKLocker.Watcher
     /// state, or otherwise keep the machine awake. Staying awake with the lid
     /// closed is the job of the power configuration applied by AFKLocker Setup.
     /// This process only locks.
+    ///
+    /// Startup is a handshake, not a launch. The readiness event is set only
+    /// after every step needed to actually lock has succeeded, so whoever
+    /// started this process learns the truth instead of assuming it.
     /// </summary>
     internal static class Program
     {
         private const int ATTACH_PARENT_PROCESS = -1;
+
+        private const int ExitOk = 0;
+        private const int ExitLidNotificationFailed = WatcherController.ExitCodeLidNotificationFailed;
+        private const int ExitAlreadyRunning = WatcherController.ExitCodeAlreadyRunning;
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -71,26 +79,62 @@ namespace AFKLocker.Watcher
         private static int RunWatcher()
         {
             bool createdNew;
-            // One watcher per session. A second launch - from autostart plus a
-            // manual start, say - exits quietly rather than double-locking.
+            // One watcher per session. A second launch - autostart plus a manual
+            // start, say - exits with a distinct code so the caller can tell
+            // "already covered" from "failed".
             using (var instanceLock = new Mutex(true, WatcherController.RunningMutexName, out createdNew))
             {
                 if (!createdNew)
-                    return 0;
+                    return ExitAlreadyRunning;
 
+                bool readyCreated;
+                using (var readySignal = new EventWaitHandle(false, EventResetMode.ManualReset,
+                    WatcherController.ReadyEventName, out readyCreated))
                 using (var stopSignal = new EventWaitHandle(false, EventResetMode.ManualReset,
                     WatcherController.StopEventName))
                 using (var sessionState = new SessionStateTracker())
                 using (var lidWindow = new LidNotificationWindow())
                 {
+                    // Both events can outlive a process that crashed while a
+                    // handle was open elsewhere. Start from a known state rather
+                    // than inheriting whatever the last run left behind.
+                    readySignal.Reset();
+                    stopSignal.Reset();
+
                     var policy = new AutoLockPolicy(new WindowsSessionLocker(), sessionState);
 
                     sessionState.Start();
 
+                    // The one step that can genuinely fail. Without it the
+                    // process would sit there looking healthy and never lock.
                     if (!lidWindow.Start())
-                        return 2;   // Windows refused the power notification registration
+                        return ExitLidNotificationFailed;
 
-                    lidWindow.LidStateChanged += (s, e) => policy.Handle(e.State);
+                    var displays = new WindowsDisplayController();
+                    lidWindow.LidStateChanged += delegate(object s, LidStateEventArgs e)
+                    {
+                        if (policy.Handle(e.State) != AutoLockDecision.Locked) return;
+
+                        // Turning the panel dark is the lid's job on a single
+                        // screen. With an external monitor attached it is not:
+                        // closing the lid makes Windows reconfigure the
+                        // displays, which wakes the external one and leaves the
+                        // lock screen lit on a desk the user has walked away
+                        // from. Asking for display-off after the lock covers
+                        // both screens.
+                        //
+                        // Deliberately only on a lock we just performed - never
+                        // on lid-open, and never on its own.
+                        try
+                        {
+                            displays.TurnOff();
+                        }
+                        catch (Exception)
+                        {
+                            // Cosmetic. A machine that locked but kept its
+                            // screens on is still locked.
+                        }
+                    };
 
                     // After resume the lid may have moved while the machine was
                     // asleep, so the next event is treated as a fresh starting
@@ -111,10 +155,21 @@ namespace AFKLocker.Watcher
                     try
                     {
                         TrimWorkingSet();
+
+                        // Everything above succeeded: the slot is held, session
+                        // tracking is live, the window exists, Windows accepted
+                        // the lid registration and the handlers are attached.
+                        // Only now is this watcher able to do its job.
+                        readySignal.Set();
+
                         Application.Run();
                     }
                     finally
                     {
+                        // Stop claiming readiness the moment we start going away,
+                        // so nothing sees a ready signal from a dying process.
+                        readySignal.Reset();
+
                         SystemEvents.SessionEnding -= endingHandler;
                         registration.Unregister(null);
                         instanceLock.ReleaseMutex();
@@ -122,7 +177,7 @@ namespace AFKLocker.Watcher
                 }
             }
 
-            return 0;
+            return ExitOk;
         }
 
         /// <summary>
@@ -132,16 +187,31 @@ namespace AFKLocker.Watcher
         /// </summary>
         private static int ReportStatus()
         {
-            bool running = WatcherController.IsAnyRunning;
+            WatcherState state = new WatcherController().GetState();
             var autostart = new RunKeyAutostartRegistry();
             LockMode mode = new FileSettingsStore().Load().Mode;
 
             WriteLine("AFKLocker watcher");
             WriteLine("  lock mode : " + (mode == LockMode.Automatic ? "automatic" : "manual"));
-            WriteLine("  running   : " + (running ? "yes" : "no"));
+            WriteLine("  state     : " + DescribeState(state));
             WriteLine("  autostart : " + (autostart.IsRegistered ? autostart.RegisteredCommand : "not registered"));
 
-            return running ? 0 : 1;
+            return state == WatcherState.Ready ? 0 : 1;
+        }
+
+        private static string DescribeState(WatcherState state)
+        {
+            switch (state)
+            {
+                case WatcherState.Ready:
+                    return "ready (registered for lid events)";
+                case WatcherState.Starting:
+                    return "starting (running, not ready yet)";
+                case WatcherState.Unhealthy:
+                    return "unhealthy (a readiness signal outlived its process)";
+                default:
+                    return "not running";
+            }
         }
 
         private static int StopRunningWatcher()
@@ -156,8 +226,11 @@ namespace AFKLocker.Watcher
             WriteLine("AFKLockerWatcher - locks the session when the laptop lid closes.");
             WriteLine("");
             WriteLine("  (no arguments)  Run the watcher.");
-            WriteLine("  --status        Report lock mode, whether a watcher is running, and autostart.");
+            WriteLine("  --status        Report lock mode, watcher state, and autostart.");
             WriteLine("  --stop          Ask a running watcher to exit.");
+            WriteLine("");
+            WriteLine("Exit codes when running: 0 exited normally, 2 could not register for lid");
+            WriteLine("events, 3 another watcher already holds this session.");
             WriteLine("");
             WriteLine("Turn automatic locking on or off in AFKLocker Setup, which also manages autostart.");
             return 0;
