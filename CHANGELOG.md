@@ -3,6 +3,65 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-09-07
+
+### Added
+
+- **Diagnostics.** AFKLocker Setup gains a Diagnostics window that runs a self-test and reports
+  what this machine can and cannot do: whether Windows reports a lid, whether the power settings
+  allow closed-lid operation, whether the watcher reaches READY, and whether the saved
+  configuration matches reality.
+  - **Test lid detection** asks the user to close and open the lid and reports what Windows
+    delivered. It never locks the session - it only listens.
+  - **Test the watcher** exercises the start/ready/stop handshake and restores the previous state.
+  - **Export diagnostics** writes a zip containing `summary.txt`, `diagnostics.json` (with a
+    schema version, for tooling) and `self-test.txt`.
+  - **Report a problem** opens the issue page. Nothing is uploaded, and the report is never put
+    into a URL.
+- Issue template asking for the things that actually help, with the diagnostics bundle attached.
+- **Code signing support.** Optional and off unless configured, so builds from source are
+  unaffected. When the signing secrets are present the release signs all four binaries and the
+  installer with RFC 3161 timestamping, verifies each signature, and fails the release if any part
+  of it fails. See [docs/signing.md](docs/signing.md).
+- **Build provenance attestation** on every release, signed or not, so anyone can verify the
+  published bytes came from this repository's workflow at a specific commit.
+
+### Changed
+
+- **Enabling automatic mode is now transactional.** It touches the saved mode, the autostart entry
+  and the running process, and any of them can fail; a failure now unwinds the steps before it.
+  Enable leaves exactly one of two states: automatic and genuinely working, or manual and clean.
+  A rollback that cannot complete is reported as residue rather than passed over.
+- **The watcher now performs a readiness handshake.** A running process is no longer treated as a
+  working watcher: a new `Local\AFKLocker.Watcher.Ready` event is set only after the lid
+  registration has actually succeeded. Starting waits for that, for the process to die, or for a
+  timeout - so a watcher that cannot receive lid events fails the enable and is rolled back
+  instead of sitting there looking healthy.
+  Setup reports four states (`NotRunning`, `Starting`, `Ready`, `Unhealthy`) instead of a boolean.
+- **Setup reconciles on open.** If the watcher was killed, the startup entry removed, or a stale
+  signal left behind, it repairs the state - or converges to manual and clean if it cannot.
+- Workflows hardened: third-party actions pinned to immutable commit SHAs rather than tags,
+  least-privilege permissions per job, `persist-credentials: false` on checkout, and signing
+  secrets scoped to the single step that uses them and absent from CI entirely.
+
+### Fixed
+
+- **The watcher now turns the displays off after locking on lid close.** On a single screen the
+  lid does that itself; with an external monitor attached it does not - closing the lid makes
+  Windows reconfigure the displays, which wakes the external one and leaves the lock screen lit on
+  a desk the user has walked away from. This only happens on a lock that just occurred: never on
+  lid-open, never on a session that was already locked, and never on its own.
+
+### Privacy
+
+- The diagnostics bundle excludes usernames, computer names, IP and MAC addresses, Wi-Fi networks,
+  files, installed programs, processes and environment variables. Paths are replaced with
+  placeholders, and a path outside the known folders is reduced to its file name. A custom power
+  plan's name is never reported, only that it is custom. Manufacturer and model are opt-in and
+  default to off.
+- A test searches the exported bundle for shapes of personal data - MAC addresses, IPs, emails,
+  un-redacted profile paths - so anything added carelessly later is caught.
+
 ## [0.3.0] - 2026-09-07
 
 ### Added
@@ -126,6 +185,7 @@ Initial release.
   machines.
 - Binaries are not code-signed, so SmartScreen will warn on first run.
 
+[0.4.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.4.0
 [0.3.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.3.0
 [0.2.2]: https://github.com/augbastos/AFKLocker/releases/tag/v0.2.2
 [0.2.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.2.1
