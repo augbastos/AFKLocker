@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-09-07
+
+### Added
+
+- **"AFKLocker Setup" in the right-click menu of the AFKLocker shortcut.** The settings window is
+  now one click away from the desktop icon, instead of a trip to the Start menu.
+
+  The entry is scoped to AFKLocker's own shortcuts. A verb registered on `lnkfile` would otherwise
+  appear on every shortcut the user owns, which is exactly the kind of thing a small utility has
+  no business doing. Scoping by the shortcut's resolved target was tried first and silently
+  matches nothing, so it is scoped by file name with a wildcard - which also survives renaming the
+  shortcut.
+
+  On Windows 11 it appears in the full context menu, which is the one shown after "Show more
+  options" unless the classic menu is enabled. Putting an entry in the compact Windows 11 menu
+  requires a signed MSIX package, which this project has no way to produce.
+
+  Installing registers it, uninstalling removes it, and the shell is notified either way so it
+  appears and disappears without restarting Explorer.
+
 ## [0.2.2] - 2026-09-07
 
 ### Added
@@ -106,6 +126,7 @@ Initial release.
   covered by tests against simulated machines.
 - Binaries are not code-signed, so SmartScreen will warn on first run.
 
+[0.3.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.3.0
 [0.2.2]: https://github.com/augbastos/AFKLocker/releases/tag/v0.2.2
 [0.2.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.2.1
 [0.2.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.2.0

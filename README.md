@@ -138,8 +138,13 @@ change them unless you tick the box.
 | Action | What happens |
 |---|---|
 | Double-click **AFKLocker** | The session locks immediately. No window appears. |
+| Right-click **AFKLocker** → *AFKLocker Setup* | Opens the settings window from the desktop icon. |
 | `AFKLocker.exe --display-off` | Turns the display off without locking. Any key or mouse move brings it back. |
-| **AFKLocker Setup** | Readiness, lock behaviour, restore. |
+| **AFKLocker Setup** | Readiness, lock behaviour, restore. Also in the Start menu. |
+
+> On Windows 11 the right-click entry lives in the full context menu — the one behind
+> **Show more options** — unless you have the classic menu enabled. Getting into the compact
+> Windows 11 menu requires a signed MSIX package, which this project cannot produce.
 
 The `--display-off` shortcut is optional at install time (unticked by default). It is useful on a
 desktop, or when you want the screen off but are staying at the machine.
