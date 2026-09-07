@@ -148,11 +148,11 @@ namespace AFKLocker.Setup
                 "Lock Windows automatically whenever the laptop lid closes. A small background "
                 + "watcher runs while you are signed in. Opening the lid never unlocks anything.");
 
-            _watcherStatus.AutoSize = false;
-            _watcherStatus.Width = width - 20;
-            _watcherStatus.Height = 34;
+            // AutoSize with a width cap, like the other notes. A fixed height
+            // silently clipped the longer status messages mid-sentence.
+            _watcherStatus.AutoSize = true;
+            _watcherStatus.MaximumSize = new Size(width - 20, 0);
             _watcherStatus.ForeColor = Color.FromArgb(94, 94, 94);
-            _watcherStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
             _applyButton.Text = "Apply configuration";
             _applyButton.Size = new Size(160, 32);
@@ -348,8 +348,9 @@ namespace AFKLocker.Setup
 
             var text = new StringBuilder();
             text.Append(status.WatcherRunning
-                ? "Watcher: running, and starts when you sign in."
-                : "Watcher: NOT running, though automatic mode is on. Sign out and back in, or re-select Automatic.");
+                ? "Watcher: running. It starts again each time you sign in."
+                : "Watcher: not running, although automatic mode is on. Select Manual and then "
+                  + "Automatic again to restart it.");
 
             // The two responsibilities are separate, and saying so is the point:
             // automatic locking works regardless of the power settings, but the

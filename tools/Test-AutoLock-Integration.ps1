@@ -64,8 +64,9 @@ $sleepBefore = (powercfg /q SCHEME_CURRENT SUB_SLEEP STANDBYIDLE | Select-String
 try {
     # ---------------------------------------------------------------- enable ---
     $manager = New-Manager
+    # No sleep here on purpose: Enable() must not return until the watcher
+    # has actually registered, or the UI that refreshes right after lies.
     Check "enable reports success" $true $manager.Enable()
-    Start-Sleep -Milliseconds 800
 
     Check "settings file written" $true (Test-Path $settingsPath)
     Check "mode recorded as automatic" "Automatic" (New-Object AFKLocker.Core.FileSettingsStore).Load().Mode
@@ -117,7 +118,6 @@ try {
 
     # ------------------------------------------------------- uninstall cleanup ---
     (New-Manager).Enable() | Out-Null
-    Start-Sleep -Milliseconds 800
     Check "re-enabled for the cleanup check" $true ([AFKLocker.Core.WatcherController]::IsAnyRunning)
 
     Check "cleanup reports success" $true (New-Manager).Cleanup()

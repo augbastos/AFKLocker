@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-09-07
+
+### Fixed
+
+- Setup reported "Watcher: NOT running" immediately after turning automatic mode on, even though
+  the watcher had started correctly. `Process.Start` returns as soon as the process exists, well
+  before it has started the runtime and claimed its mutex, and the window refreshed in that gap.
+  Starting the watcher now waits until it has actually registered, so the status reflects reality.
+- The watcher status message was clipped mid-sentence by a fixed control height. It now grows to
+  fit, like the other notes in the window.
+- Reworded that status so the recovery step is a single clear action.
+
 ## [0.2.0] - 2026-09-06
 
 ### Added
@@ -75,6 +87,7 @@ Initial release.
   covered by tests against simulated machines.
 - Binaries are not code-signed, so SmartScreen will warn on first run.
 
+[0.2.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.2.1
 [0.2.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.2.0
 [0.1.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.1.1
 [0.1.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.1.0

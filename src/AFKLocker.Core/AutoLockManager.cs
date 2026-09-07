@@ -117,6 +117,9 @@ namespace AFKLocker.Core
 
         public const string WatcherFileName = "AFKLockerWatcher.exe";
 
+        /// <summary>How long to wait for a launched watcher to register itself.</summary>
+        private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(10);
+
         /// <summary>True when a watcher is running in this session.</summary>
         public bool IsRunning
         {
@@ -161,7 +164,24 @@ namespace AFKLocker.Core
                 WorkingDirectory = Path.GetDirectoryName(watcherPath) ?? string.Empty
             };
             Process.Start(startInfo);
-            return true;
+
+            // Process.Start returns as soon as the process exists, which is well
+            // before it has started the runtime and claimed the mutex. Without
+            // this wait, anything that checks the status immediately afterwards
+            // - the setup window refreshes right after enabling - sees "not
+            // running" and reports a failure that did not happen.
+            return WaitUntilRunning(StartupTimeout);
+        }
+
+        private static bool WaitUntilRunning(TimeSpan timeout)
+        {
+            var deadline = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                if (IsAnyRunning) return true;
+                Thread.Sleep(50);
+            }
+            return IsAnyRunning;
         }
 
         /// <summary>
