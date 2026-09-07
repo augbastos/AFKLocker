@@ -47,6 +47,7 @@ jobs:
           path: |
             build/AFKLocker.exe
             build/AFKLockerSetup.exe
+            build/AFKLockerWatcher.exe
             build/AFKLocker.Core.dll
             build/AFKLocker-*-setup.exe
           if-no-files-found: error
