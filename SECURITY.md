@@ -85,7 +85,11 @@ verify from scratch:
   keyboard. There is no keyboard hook anywhere in the source.
 - **No elevation unless asked.** It runs as the signed-in user. Setup offers to
   elevate only when Windows refuses a power setting write, and only after
-  telling you why.
+  telling you why. An elevated Setup window exists for that write and nothing
+  else: the mode and hotkey controls are switched off in it, and it will not
+  start the background helper, because a child process inherits its parent's
+  token.
 - **No service and no scheduled task.** The optional background helper is a
   normal user-session process, started from `HKCU\...\Run`, visible in Task
-  Manager's Startup tab.
+  Manager's Startup tab, and never running with more rights than the session it
+  looks after.

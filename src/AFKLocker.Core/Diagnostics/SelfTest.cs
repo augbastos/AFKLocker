@@ -539,13 +539,20 @@ namespace AFKLocker.Core.Diagnostics
                 }
 
                 WatcherStartResult start = _watcher.Start(_watcherPath);
+
+                // Refusing to start a helper from an elevated process is the
+                // program working, not failing. Reporting it as a defect would
+                // send whoever reads the export looking for a broken watcher.
+                bool notTested = start.Failure == WatcherStartFailure.RequiresStandardUser;
+
                 report.Add(Section, "watcher.start", "Watcher starts",
-                    start.Success ? CheckOutcome.Pass : CheckOutcome.Fail,
+                    start.Success ? CheckOutcome.Pass
+                                  : notTested ? CheckOutcome.Warning : CheckOutcome.Fail,
                     start.Success ? "Started" : _redactor.Redact(start.Message));
 
                 if (!start.Success)
                 {
-                    report.Fact("watcher.lifecycleTest", "Fail");
+                    report.Fact("watcher.lifecycleTest", notTested ? "Not tested" : "Fail");
                     report.Fact("watcher.startFailure", start.Failure.ToString());
                     return;
                 }

@@ -3,6 +3,50 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.5.3] - 2026-09-07
+
+### Fixed
+
+- **The background helper could be started with an administrator token.** Setup
+  relaunches itself elevated when Windows refuses a power setting write, and a
+  child process inherits its parent's token — so a helper launched from that
+  window ran as administrator for the rest of the session, holding a global
+  hotkey registration and locking the session with rights it has no use for.
+  Nothing about the helper needs them.
+
+  Three ways in, and the first needed no clicking at all: the setup window
+  reconciles its saved state when it opens, and repairing an ordinary
+  inconsistency — a helper killed in Task Manager, a startup entry removed by a
+  cleanup tool — starts the helper. Switching automatic locking or the hotkey on
+  inside the elevated window was the obvious one. Diagnostics was the third: the
+  self-test starts and stops a helper to check that it can.
+
+  `WatcherController.Start` now refuses outright when the calling process is
+  elevated. It is the only line in the program that can launch the helper, which
+  is what makes "never elevated" a property of the program rather than of its
+  callers, and it covers all three.
+
+- **That refusal would have switched off features the user had chosen.**
+  Reconciliation repairs a broken state by re-applying the stored settings, and
+  when it cannot, it converges to manual and clean. A refusal arriving in the
+  middle of that reads exactly like "automatic mode cannot be restored" — so
+  opening the elevated window would have quietly turned off the mode and the
+  hotkey, for no reason other than which window happened to be open.
+  `AutoLockManager` now steps aside before it can happen: elevated, it changes
+  nothing and reports nothing to do.
+
+### Changed
+
+- The elevated setup window shows the mode and hotkey controls switched off,
+  with the reason in place of their status. It exists to write power settings
+  and nothing else. Whatever was already configured keeps working; the ordinary
+  setup window still changes it.
+
+- A helper that was not started because the caller was elevated is reported in
+  diagnostics as a warning rather than a failure. It is the program working, and
+  a failure there would send whoever reads the export looking for a broken
+  watcher that does not exist.
+
 ## [0.5.2] - 2026-09-07
 
 Documentation only. Nothing about the program changed, and there is no reason to
