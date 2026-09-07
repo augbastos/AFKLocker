@@ -3,6 +3,35 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.5.2] - 2026-09-07
+
+Documentation only. Nothing about the program changed, and there is no reason to
+update from 0.5.1 unless you want the current README.
+
+### Changed
+
+- **The README is a third of the size.** It had grown past 500 lines for a tool
+  with one button, and length was costing it readers: the safety warning, the
+  unsigned-binary notice and the list of settings it changes were all buried
+  behind essays. The reasoning moved to `docs/architecture.md`, which is where
+  somebody asking "why" is already looking.
+
+  The first pass dropped four things it should not have — the Modern Standby
+  gap, that OEM utilities and Group Policy can override the settings, the
+  twelve-hour backstop, and that Automatic mode on battery without the battery
+  option will lock and then sleep. An audit of the trimmed text against the code
+  caught them, along with four sentences that had become absolutes the code does
+  not make: "all-or-nothing", "never blanks a screen you are typing at", "keeps
+  asking until it works", and an uninstall that "always" removes the helper.
+  All are back or corrected. Trimming is exactly when a true-but-qualified
+  sentence turns into a false one.
+
+- `docs/architecture.md` gains the display guard, which was documented nowhere
+  but the README: why the console lock display timeout cannot be relied on, why
+  Windows ignores a display-off request after recent input, why a broadcast
+  `SendMessage` can block forever, and the two defects that were only ever
+  visible on a real machine.
+
 ## [0.5.1] - 2026-09-07
 
 ### Fixed
@@ -356,6 +385,7 @@ Initial release.
   machines.
 - Binaries are not code-signed, so SmartScreen will warn on first run.
 
+[0.5.2]: https://github.com/augbastos/AFKLocker/releases/tag/v0.5.2
 [0.5.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.5.1
 [0.5.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.5.0
 [0.4.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.4.1

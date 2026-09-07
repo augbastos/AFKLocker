@@ -223,6 +223,101 @@ breath, so a conflict is a sentence at configuration time rather than a helper t
 later. The probe registers against the calling thread rather than a window, so there is nothing
 left to leak if the release fails.
 
+## Turning the screens off is the hardest easy thing here
+
+Locking does not darken a screen, and Windows cannot be relied on to do it
+either. Three facts, all measured on a real machine rather than assumed, decide
+the whole design:
+
+**1. The console lock display off timeout may never fire.** `VIDEOCONLOCK`
+(`8EC4B3A5-6868-48c2-BE75-4F3044BE88A7` under `SUB_VIDEO`) is a hidden setting —
+invisible to `powercfg /q`, readable and writable only through the API. On the
+development machine it simply does not fire: session locked, no input, minutes
+passing, and no `GUID_CONSOLE_DISPLAY_STATE` change at all. Changing its value
+does nothing, so AFKLocker does not touch it.
+
+**2. Windows ignores `SC_MONITORPOWER` while there has been recent user input.**
+The request returns success and nothing happens. AFKLocker asks about a second
+after the click or key that locked the machine, so the first request is very
+often discarded. Measured: with 94 seconds of idle, the same request took effect
+in 200 milliseconds.
+
+The answer is not a cleverer request, it is persistence — ask again every few
+seconds for as long as the session stays locked, and the first attempt after the
+person actually leaves is the one that lands.
+
+**3. `SendMessage` to `HWND_BROADCAST` can block forever.** A broadcast is
+synchronous against every top-level window on the desktop, so one application
+that has stopped pumping messages blocks the whole call with no timeout, and
+that gets likelier the longer a machine has been running. Observed live on a
+machine with about a week of uptime; the process had to be killed.
+`SendMessageTimeout` with `SMTO_ABORTIFHUNG` is used instead — noting that its
+timeout is **per window, not total**, so a 2-second timeout was measured taking
+9.9 seconds. Sending `SC_MONITORPOWER` to a window of our own instead of
+broadcasting does not work at all.
+
+### Knowing when to stop is the harder half
+
+Blanking too little leaves a lit lock screen, which is a nuisance. Blanking too
+much darkens the screen of somebody standing at the machine typing their
+password, which is a malfunction. The two costs are not symmetrical, so anything
+ambiguous waits rather than acts.
+
+Exactly one thing ends the guard: **the session being unlocked**. Everything
+else only changes how long it waits.
+
+| Signal | Response |
+|---|---|
+| Display lights up again | ask again — 1.2s while the lid is still settling, then a slower retry |
+| Keyboard or mouse used | leave it alone for 90 seconds, restarted by every further touch |
+| Lid opened | the same 90-second pause |
+| Request cap reached | back off to a slow retry; **never** give up while locked |
+| 12 hours | a backstop for a session that never reports being unlocked |
+
+Two defects here were only ever visible on a real machine, and both are worth
+remembering because the code and the tests looked correct:
+
+- **The blanker assumed the display was on when it started.** The first request
+  usually lands, so the display is already off and Windows sends no state-change
+  notification — there was no change. The wrong assumption was never corrected,
+  a verification tick spent a request against it every 2.5 seconds, and the
+  whole budget was gone about twelve seconds after locking. Windows sends the
+  current state as soon as the notification is registered, so waiting for that
+  costs milliseconds and removes the guess.
+- **Lid-open produced a decision nobody carried out.** The pause was decided and
+  tested at the policy level and then thrown away, because the lid handler
+  passed its result to a method that only knew two of the four outcomes. Two
+  code paths for four outcomes, both of which compiled.
+
+The other trap is that input immediately after locking **is** the click that did
+the locking. Treating it as somebody arriving starts the 90-second pause against
+the very action that asked for the screen to go out, so input carries that
+meaning only once the screen has actually been dark. Lid-open carries it
+immediately, because nobody opens a laptop by accident on their way out.
+
+### Machines this cannot fix
+
+Two classes of machine are outside what any of this reaches, and both are
+detected and reported rather than promised:
+
+- **Modern Standby (S0 low power idle).** The classic sleep timeouts AFKLocker
+  configures are not the whole story there; the system can still drop into a low
+  power state with the lid closed, because that decision belongs to the
+  firmware. `ReadinessEvaluator` reports Modern Standby as a warning rather than
+  a pass, and the diagnostics bundle records it.
+- **Managed machines and OEM power utilities.** Group Policy can refuse the
+  writes outright, and vendor software can re-apply its own settings afterwards.
+  Nothing here detects a later overwrite, so the honest answer when a machine
+  reads Ready and still sleeps is to suspect one of those first.
+
+### What this costs
+
+`AFKLocker.exe` stays alive while the session is locked and exits when it is
+unlocked. That is not resident in the sense the project promises — nothing
+exists while you are working — and it holds no execution state and keeps nothing
+awake. A watchdog thread ends the process regardless, because a stuck AFKLocker
+is worse than an abrupt one.
+
 ## Enabling automatic mode is transactional
 
 Turning automatic mode on touches three things - the saved mode, the autostart entry, the running
