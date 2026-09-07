@@ -805,7 +805,8 @@ namespace AFKLocker.Setup
             {
                 var configurator = new PowerConfigurator(_power, _backups);
                 ApplyResult result = configurator.Apply(plan);
-                ShowMessage(DescribeApply(result), MessageBoxIcon.Information);
+                ShowMessage(DescribeApply(result),
+                    result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
             }
             catch (PowerConfigurationException ex)
             {
@@ -863,6 +864,34 @@ namespace AFKLocker.Setup
         private static string DescribeApply(ApplyResult result)
         {
             var text = new StringBuilder();
+
+            if (!result.Success)
+            {
+                text.AppendLine("The power settings could not be changed.");
+                text.AppendLine();
+                text.AppendLine(result.Message);
+
+                if (result.RolledBack && result.IsClean)
+                {
+                    text.AppendLine();
+                    text.AppendLine("Everything that had already been changed was put back, so this "
+                                    + "machine is exactly as it was before.");
+                }
+
+                if (!result.IsClean)
+                {
+                    text.AppendLine();
+                    text.AppendLine("These could not be put back:");
+                    foreach (string item in result.Residue)
+                        text.AppendLine("  - " + item);
+                    text.AppendLine();
+                    text.AppendLine("Your original values are still saved, so \"Restore previous\" "
+                                    + "can put them back.");
+                }
+
+                return text.ToString();
+            }
+
             if (result.ChangedAnything)
             {
                 text.AppendLine("Configuration applied:");

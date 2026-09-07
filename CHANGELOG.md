@@ -3,6 +3,75 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-09-07
+
+### Fixed
+
+- **Opening the lid never actually paused the display guard.** The pause was
+  written, tested at the decision level, and then thrown away: the lid handler
+  passed its decision to a method that only knew how to turn the display off or
+  stop, so "wait, somebody is here" did nothing at all. Opening a laptop could
+  therefore have the screen go dark again while you were still reaching for the
+  keyboard. Two code paths for four outcomes, both of which compiled. There is
+  one path now, and a test that fails if an outcome is ever added without being
+  handled.
+
+- **A stray input event right after locking suppressed the display-off
+  entirely.** The most recent input at that moment is the click or key that did
+  the locking, and reading it as "somebody is at the machine" started a
+  ninety-second pause against the very action that asked for the screen to go
+  out. Input now means that only once the screen has actually been dark; opening
+  the lid still means it immediately, because that one is unambiguous.
+
+- **Applying power settings is now all-or-nothing.** A backup was written before
+  the first change, which made recovery possible while still leaving the machine
+  half-configured and the user unaware — and for these particular settings that
+  means a laptop that believes it will keep running with the lid shut and will
+  actually sleep. A write that fails unexpectedly now unwinds the writes that
+  already landed, in reverse, and says whether that unwinding was complete. The
+  original error is carried rather than swallowed, the backup is never deleted
+  on a failure, and access-denied still surfaces as an exception so Setup can
+  offer to elevate.
+
+- **Uninstalling checks whether its cleanup worked.** Both the `Exec` return
+  value and the exit code were discarded, so an uninstall could report success
+  while a sign-in entry survived — pointing into a folder about to be deleted,
+  with no AFKLocker left to remove it. It now says so, tells you where to look,
+  and continues. The same applies to restoring the power settings: if that
+  cannot be completed, it says where your original values are saved rather than
+  letting you believe the machine was put back. A silent uninstall shows nothing
+  and writes both outcomes to the installer log. `AFKLockerSetup.exe` returns
+  distinct exit codes so the caller can tell "done", "mostly done" and "not
+  done" apart.
+
+- **Documentation described the old display behaviour.** The README still said
+  the guard lasted 45 seconds, that input or opening the lid ended it, and that
+  five requests ended it — none of which had been true since those were changed
+  to a defer, a back-off, and a guard that lasts as long as the session is
+  locked. It also said turning automatic mode off always leaves nothing
+  resident, which stopped being true when the hotkey could need the same helper.
+  The architecture notes described `AFKLocker.exe` as "lock and exit" and put
+  the codebase at roughly 1,200 lines, which is out by about six times.
+
+### Added
+
+- `SECURITY.md`: supported versions, how to report a vulnerability privately,
+  and the properties a reviewer would otherwise have to establish from scratch —
+  no network access, no telemetry, no keyboard hook, no service.
+- `tools/Check-Version.ps1`, wired into both workflows. The version lives in
+  three files; bumping two of the three is an ordinary slip that produces an
+  installer whose file name, Programs and Features entry and About text
+  disagree. On a tag it also checks the tag matches.
+- Tests for the display guard's timing, which was the one part of that class no
+  test could reach: the grace window now takes "now" as an argument instead of
+  reading the clock. No `IClock`, no restructuring — the decision that needed
+  testing was extracted and the rest left alone.
+
+### Changed
+
+- README examples use `AFKLocker-<version>-setup.exe` rather than a version that
+  goes stale the day after a release.
+
 ## [0.5.0] - 2026-09-07
 
 ### Added
@@ -287,6 +356,7 @@ Initial release.
   machines.
 - Binaries are not code-signed, so SmartScreen will warn on first run.
 
+[0.5.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.5.1
 [0.5.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.5.0
 [0.4.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.4.1
 [0.4.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.4.0

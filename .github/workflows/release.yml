@@ -30,6 +30,13 @@ jobs:
           ref: ${{ github.event.inputs.tag || github.ref }}
           persist-credentials: false
 
+      # Before anything is built. A tag that disagrees with the version inside
+      # the binaries is the one drift that actually reaches other people, and it
+      # is cheaper to refuse here than to unpublish a release.
+      - name: Check the tag matches the version
+        shell: pwsh
+        run: ./tools/Check-Version.ps1 -Tag "${{ github.event.inputs.tag || github.ref_name }}"
+
       # Decided in one place so later steps can branch on it without touching
       # the secrets themselves.
       - name: Determine whether signing is configured

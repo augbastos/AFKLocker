@@ -1,3 +1,4 @@
+using System;
 using AFKLocker.Core;
 
 namespace AFKLocker.Tests
@@ -19,6 +20,158 @@ namespace AFKLocker.Tests
         private static DisplayBlankPolicy Fresh()
         {
             return new DisplayBlankPolicy(Idle);
+        }
+
+        // ------------------------------------------------------------ grace ---
+        //
+        // The window that keeps the screen alone while somebody is at the
+        // machine. It used to read the clock directly, which meant the one part
+        // of this class that decides on TIME was the one part no test could
+        // reach - and it is the part that, if wrong, blanks the screen of
+        // somebody typing their password.
+
+        private static readonly DateTime Noon = new DateTime(2026, 9, 7, 12, 0, 0, DateTimeKind.Utc);
+        private static readonly TimeSpan Window = TimeSpan.FromSeconds(90);
+
+        [Test("input starts the grace, and the screen is left alone during it")]
+        private static void InputStartsGrace()
+        {
+            var grace = new DisplayGrace();
+            grace.Begin(Noon, Window);
+
+            Assert.True(grace.Blocks(Noon), "immediately");
+            Assert.True(grace.Blocks(Noon.AddSeconds(89)), "and one second before it ends");
+        }
+
+        [Test("the grace expires, and the screen can go dark again")]
+        private static void GraceExpires()
+        {
+            var grace = new DisplayGrace();
+            grace.Begin(Noon, Window);
+
+            Assert.False(grace.Blocks(Noon.AddSeconds(90)), "at the boundary");
+            Assert.False(grace.Blocks(Noon.AddSeconds(91)), "and after it");
+        }
+
+        [Test("more input restarts the grace from scratch, rather than extending nothing")]
+        private static void MoreInputRestartsGrace()
+        {
+            var grace = new DisplayGrace();
+            grace.Begin(Noon, Window);
+
+            // Somebody typing a long password touches the keyboard repeatedly.
+            grace.Begin(Noon.AddSeconds(80), Window);
+
+            Assert.True(grace.Blocks(Noon.AddSeconds(100)),
+                "the original window had passed, but they are still here");
+            Assert.False(grace.Blocks(Noon.AddSeconds(171)), "and it ends 90s after the LAST touch");
+        }
+
+        [Test("opening the lid starts the same grace as input")]
+        private static void LidOpenStartsGrace()
+        {
+            var grace = new DisplayGrace();
+            grace.Begin(Noon, Window);
+
+            Assert.True(grace.Blocks(Noon.AddSeconds(10)),
+                "reaching for the keyboard after opening a laptop takes longer than a second");
+        }
+
+        [Test("the remaining time is what re-arms the timer, and never goes negative")]
+        private static void RemainingIsUsableAsATimerInterval()
+        {
+            var grace = new DisplayGrace();
+            grace.Begin(Noon, Window);
+
+            Assert.Equal(TimeSpan.FromSeconds(30), grace.Remaining(Noon.AddSeconds(60)), "what is left");
+            Assert.Equal(TimeSpan.Zero, grace.Remaining(Noon.AddSeconds(200)),
+                "a negative interval would throw when handed to a timer");
+        }
+
+        [Test("ending the grace takes effect immediately, whatever was left")]
+        private static void EndingGraceIsImmediate()
+        {
+            var grace = new DisplayGrace();
+            grace.Begin(Noon, Window);
+            grace.End();
+
+            Assert.False(grace.Blocks(Noon), "signing in does not wait out the window");
+            Assert.Equal(TimeSpan.Zero, grace.Remaining(Noon), "and nothing is left of it");
+        }
+
+        [Test("a fresh grace blocks nothing")]
+        private static void UnstartedGraceBlocksNothing()
+        {
+            var grace = new DisplayGrace();
+
+            Assert.False(grace.Blocks(Noon), "locking must darken the screen at once");
+        }
+
+        [Test("every decision the policy can make is one the blanker acts on")]
+        private static void EveryDecisionIsHandled()
+        {
+            // The blanker used to carry out TurnOff and Stop in one place and
+            // Defer and BackOff in another, and lid-open went through the place
+            // that did not know about Defer - so opening a laptop started no
+            // grace at all and the screen could go dark while somebody was still
+            // reaching for the keyboard. The bug was two paths for four
+            // outcomes, and it was invisible because both paths compiled.
+            //
+            // Enumerating the outcomes here means adding a fifth one to the enum
+            // without handling it fails a test rather than going quiet.
+            var handled = new[]
+            {
+                BlankAction.Nothing, BlankAction.TurnOff,
+                BlankAction.Defer, BlankAction.BackOff, BlankAction.Stop
+            };
+
+            foreach (BlankAction action in Enum.GetValues(typeof(BlankAction)))
+            {
+                Assert.True(Array.IndexOf(handled, action) >= 0,
+                    "BlankAction." + action + " exists but nothing in this test acknowledges it - "
+                    + "check DisplayBlanker.Apply handles it too");
+            }
+        }
+
+        [Test("lid and input both defer once the screen has been dark, and are carried out the same way")]
+        private static void LidOpenAndInputAgreeAfterDarkness()
+        {
+            // They reach the blanker through different methods, which is exactly
+            // how one of them ended up doing nothing at all, so the outcomes are
+            // pinned together here.
+            //
+            // They are deliberately NOT identical before the screen has been
+            // dark: a lid opening is unambiguous, while the most recent input at
+            // that point is the click that did the locking.
+            var byLid = Fresh();
+            byLid.Begin();
+
+            var byInput = Fresh();
+            byInput.Begin();
+            byInput.HandleDisplayState(DisplayState.Off, true, Idle);
+
+            Assert.Equal(BlankAction.Defer, byLid.HandleLid(LidState.Opened), "lid open defers");
+            Assert.Equal(BlankAction.Defer,
+                byInput.HandleDisplayState(DisplayState.On, true, Idle + 1), "so does input");
+        }
+
+        [Test("the input tick wrapping round is treated as input, not as a fault")]
+        private static void InputTickWraparoundIsSafe()
+        {
+            // GetLastInputInfo returns a 32-bit tick count that wraps about every
+            // 49.7 days. The comparison is equality, never subtraction, so a wrap
+            // reads as "something happened" - which is the safe direction, since
+            // it defers rather than blanks.
+            var policy = new DisplayBlankPolicy(uint.MaxValue - 1);
+            policy.Begin();
+            policy.HandleDisplayState(DisplayState.Off, true, uint.MaxValue - 1);
+
+            Assert.Equal(BlankAction.Defer, policy.HandleDisplayState(DisplayState.On, true, 5),
+                "a wrapped tick differs from the last one, so it defers");
+            Assert.False(policy.Stopped, "and nothing about it is treated as an error");
+
+            Assert.Equal(BlankAction.TurnOff, policy.HandleDisplayState(DisplayState.On, true, 5),
+                "and once the value settles, blanking resumes normally");
         }
 
         [Test("the first request happens as soon as the session is locked")]
@@ -90,15 +243,45 @@ namespace AFKLocker.Tests
                 "an unlocked session is the one state where a lit screen is correct");
         }
 
-        [Test("keyboard or mouse input defers, it does not end the guard")]
-        private static void UserInputDefers()
+        [Test("input before the screen has ever been dark is the click that locked it")]
+        private static void InputBeforeDarknessIsNotSomebodyArriving()
         {
             var policy = Fresh();
             policy.Begin();
 
+            // A stray event right after the lock - the second half of a
+            // double-click, a mouse-up, a trackpad brush while closing the lid -
+            // would otherwise be read as "somebody is here" and start a
+            // ninety-second pause against the very action that asked for the
+            // screen to go out.
+            Assert.Equal(BlankAction.TurnOff, policy.HandleDisplayState(DisplayState.On, true, Idle + 1),
+                "nothing has been dark yet, so there was nothing for anyone to wake");
+            Assert.False(policy.Stopped, "and it keeps going");
+        }
+
+        [Test("keyboard or mouse input defers once the screen has been dark")]
+        private static void UserInputDefers()
+        {
+            var policy = Fresh();
+            policy.Begin();
+            policy.HandleDisplayState(DisplayState.Off, true, Idle);   // it worked
+
             Assert.Equal(BlankAction.Defer, policy.HandleDisplayState(DisplayState.On, true, Idle + 1),
-                "somebody is at the machine, so wait");
+                "now input really does mean somebody woke it");
             Assert.False(policy.Stopped, "but waiting is not giving up");
+        }
+
+        [Test("opening the lid defers even before the screen has been dark")]
+        private static void LidOpenDefersRegardless()
+        {
+            var policy = Fresh();
+            policy.Begin();
+
+            // Unlike input, this is unambiguous: nobody opens a lid by accident
+            // while walking away, so it does not need the screen to have gone
+            // dark first to mean somebody arrived.
+            Assert.Equal(BlankAction.Defer, policy.HandleLid(LidState.Opened),
+                "a lid opening is a person, whatever the screen was doing");
         }
 
         [Test("somebody who wakes the screen and walks away without signing in is still covered")]
@@ -125,6 +308,7 @@ namespace AFKLocker.Tests
         {
             var policy = Fresh();
             policy.Begin();
+            policy.HandleDisplayState(DisplayState.Off, true, Idle);   // the screen went dark
 
             for (uint tick = 1; tick <= 6; tick++)
             {

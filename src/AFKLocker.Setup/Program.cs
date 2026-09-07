@@ -57,6 +57,19 @@ namespace AFKLocker.Setup
         private const string DisableAutoLockSilentFlag = "--disable-autolock-silent";
         private const string DiagnosticsFlag = "--diagnostics";
 
+        /// <summary>
+        /// Exit codes the uninstaller reads. Three values rather than two,
+        /// because "nothing was cleaned up" and "most of it was" call for
+        /// different words to the person removing the program.
+        /// </summary>
+        public const int ExitOk = 0;
+
+        /// <summary>Something could not be done, and it matters.</summary>
+        public const int ExitFailed = 1;
+
+        /// <summary>It mostly worked; something minor was left behind.</summary>
+        public const int ExitPartial = 2;
+
         [STAThread]
         private static int Main(string[] args)
         {
@@ -108,14 +121,20 @@ namespace AFKLocker.Setup
             try
             {
                 var configurator = new PowerConfigurator(new WindowsPowerConfiguration(), new FileBackupStore());
-                configurator.RestoreAll();
-                return 0;
+                RestoreResult result = configurator.RestoreAll();
+
+                // A setting that could not be put back is the case the caller
+                // most needs to hear about, and it does not throw - it comes
+                // back as a skipped entry. Returning 0 for it told the
+                // uninstaller everything was fine while the machine was still
+                // configured for closed-lid operation.
+                return result.Skipped.Count > 0 ? ExitPartial : ExitOk;
             }
             catch (Exception)
             {
                 // Never block an uninstall on this. The backup files stay on disk
                 // so the values can still be restored by hand.
-                return 1;
+                return ExitFailed;
             }
         }
 
@@ -129,12 +148,20 @@ namespace AFKLocker.Setup
             try
             {
                 AutoLockResult result = CreateAutoLockManager().Cleanup();
-                return result.Success ? 0 : 1;
+                if (result.Success) return ExitOk;
+
+                // The distinction matters to the uninstaller. A sign-in entry
+                // that survived will keep trying to start a program that is
+                // about to be deleted; a helper that would not stop is untidy
+                // but goes away at the next sign-out.
+                return result.Failure == AutoLockFailure.AutostartFailed
+                    ? ExitFailed
+                    : ExitPartial;
             }
             catch (Exception)
             {
                 // Never block an uninstall on this.
-                return 1;
+                return ExitFailed;
             }
         }
 

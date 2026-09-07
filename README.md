@@ -127,39 +127,54 @@ The part that makes closed-lid work possible is not the lock. It's the power con
 
 1. **Lid close action = Do nothing**, so shutting the laptop doesn't suspend it.
 2. **System sleep timeout = Never**, so idling doesn't suspend it either.
-3. **Nothing stays resident.** The machine keeps running because Windows is configured to, not
-   because something is holding it awake. AFKLocker holds no execution state and starts no
-   service; the only thing that outlives the lock is described below, and it is measured in
-   seconds.
+3. **Nothing stays resident while you are working.** The machine keeps running because Windows is
+   configured to, not because something is holding it awake. AFKLocker holds no execution state
+   and starts no service. What does live while the machine is *locked* is described below.
 
 ### Turning the screens off
 
-Locking does not darken a screen. Windows will eventually do it on its own, after the *console
-lock display off timeout* - but that setting is hidden, it is sixty seconds by default, and on
-some machines it does not fire at all. Sixty seconds of lit lock screen on a desk you have
-already walked away from is not what a lock is for.
+Locking does not darken a screen, and Windows cannot be relied on to do it either. There is a
+hidden setting for it — the *console lock display off timeout*, sixty seconds by default — and on
+some machines it never fires at all: measured on the development machine, the lock screen sat lit
+with no input for minutes, and Windows reported no display change whatsoever.
 
 So AFKLocker asks for display-off itself, right after locking. That request puts the panel into
 standby rather than painting it black, which is the difference between a monitor that is off and
 one that is merely dark.
 
-One request is not enough when an external monitor is attached. Closing the lid makes Windows
-reconfigure the displays, and that reconfiguration lights the external panel back up - *after*
-the lock, so the request has already been made and lost. AFKLocker therefore keeps asking for up
-to 45 seconds, which is long enough to cover locking and then closing the lid.
+**One request is not enough, for two reasons.** Closing the lid makes Windows reconfigure the
+displays, and that reconfiguration lights an external monitor back up *after* the lock. And
+Windows **ignores a display-off request while there has been recent user input** — it returns
+success and does nothing. AFKLocker asks about a second after the click that locked the machine,
+so the first request is very often discarded. Measured: with 94 seconds of idle, the same request
+took effect in 200 milliseconds.
 
-Knowing when to stop is the harder half, because a program that insists would blank the screen of
-someone standing at the machine typing their password. Any one of these ends it for good:
+The answer is not a cleverer request, it is patience. AFKLocker keeps asking, roughly every five
+seconds while the screen is still lit, **for as long as the session stays locked**. The first
+attempt after you actually walk away is the one that lands.
 
-- the session is unlocked;
-- a key is pressed or the mouse moves;
-- the lid is opened;
-- five requests have been made, meaning something else on this machine wants the display on and
-  gets to win;
-- 45 seconds pass.
+Knowing when to *stop* is the harder half, because a program that insists would blank the screen
+of someone standing at the machine typing their password. In normal use one thing ends it:
 
-Then the process exits. It never suspends the machine, holds no execution state, and failing to
-darken a screen never affects the lock, which has already happened by then.
+- **the session is unlocked.** Then the guard stops and the process exits.
+
+Everything else only changes how long it waits — including the twelve-hour backstop, which exists
+for a session that somehow never reports being unlocked and should never be reached:
+
+| What happens | What AFKLocker does |
+|---|---|
+| A key is pressed or the mouse moves | leaves the screen alone for 90 seconds, restarted by every further touch |
+| The lid is opened | the same 90-second pause |
+| Something else keeps the display on | slows down to one attempt every few seconds, and keeps going |
+| Twelve hours pass | gives up, as a backstop against a session that never reports being unlocked |
+
+Opening a lid or nudging a mouse and then walking away *without* signing in used to leave the
+screen lit for the rest of the night. It no longer does: those are reasons to wait, not to give
+up.
+
+This means `AFKLocker.exe` stays alive while your session is locked, and exits when you sign back
+in. It still holds no execution state and keeps nothing awake — and failing to darken a screen
+never affects the lock, which has already happened by then.
 
 ## Quick start
 
@@ -193,13 +208,13 @@ at all.
 
 ```powershell
 # Proves this file was built by this repository's release workflow
-gh attestation verify AFKLocker-0.4.0-setup.exe --repo augbastos/AFKLocker
+gh attestation verify AFKLocker-<version>-setup.exe --repo augbastos/AFKLocker
 ```
 
 Or check the hash against `SHA256SUMS.txt` from the release:
 
 ```powershell
-Get-FileHash AFKLocker-0.4.0-setup.exe -Algorithm SHA256
+Get-FileHash AFKLocker-<version>-setup.exe -Algorithm SHA256
 ```
 
 Both are free, and both are stronger than "the installer looked official". The source is here, the
@@ -264,8 +279,10 @@ still running, in the same session, exactly where it was.
   Setup shows them separately for that reason.
 - **It does not watch what you are running**, or care when it finishes.
 
-Turn it off and the watcher stops, the sign-in entry is removed, and nothing of AFKLocker is
-resident again. Uninstalling does the same, without asking.
+Turn it off and the helper stops, the sign-in entry is removed, and nothing of AFKLocker is
+resident again — **unless the global hotkey is still on**, in which case the helper stays, because
+it is still the thing waiting for the key. Turning off the last feature that needs it is what
+removes it. Uninstalling removes it either way, without asking.
 
 **With an external monitor**, closing the lid makes Windows move everything to the external
 screen. Both modes then hold the displays off the same way, described in

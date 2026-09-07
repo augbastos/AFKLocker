@@ -22,17 +22,19 @@ that does one small thing on Windows and should keep working with no maintenance
 
 **Cost, stated honestly:** that compiler only supports **C# 5**. No string interpolation, no
 `nameof`, no exception filters, no expression-bodied members. The code reads slightly older than
-modern C# as a direct result. For roughly 1,200 lines that never change shape, that was judged a
-fair trade for a zero-dependency build.
+modern C# as a direct result. For a codebase of this size and shape - a few thousand lines of
+source, heavily commented, with no framework surface to speak of - that was judged a fair trade
+for a zero-dependency build. It has cost real time exactly twice, both times as a compile error
+rather than a bug: an exception filter and a string interpolation, each rewritten in a minute.
 
 `tools/Build.ps1` passes `/warnaserror+` with `/warn:4`, so compiler warnings fail the build.
 That is the static analysis gate; there is no separate linter.
 
-## Three executables, and only one that can be resident
+## Three executables, and what each one's lifetime actually is
 
 | Binary | Type | Job |
 |---|---|---|
-| `AFKLocker.exe` | `winexe` | Lock the session and exit. |
+| `AFKLocker.exe` | `winexe` | Lock the session, then keep the screens dark until it is unlocked. |
 | `AFKLockerSetup.exe` | `winexe` | Check readiness, configure, restore, choose lock mode. |
 | `AFKLockerWatcher.exe` | `winexe` | Optional background helper: lid lock, global hotkey. |
 | `AFKLocker.Core.dll` | library | All the logic worth testing. |

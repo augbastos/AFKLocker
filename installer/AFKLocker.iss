@@ -9,7 +9,7 @@
 ; Expects the compiled binaries in build\ (run tools\Build.ps1 first).
 
 #define AppName        "AFKLocker"
-#define AppVersion     "0.5.0"
+#define AppVersion     "0.5.1"
 #define AppPublisher   "Augusto Bastos"
 #define AppUrl         "https://github.com/augbastos/AFKLocker"
 #define AppExe         "AFKLocker.exe"
@@ -102,6 +102,8 @@ var
   SetupPath: String;
   ResultCode: Integer;
   ShouldRestore: Boolean;
+  Cleaned: Boolean;
+  Restored: Boolean;
 begin
   if CurUninstallStep <> usUninstall then
     Exit;
@@ -110,10 +112,26 @@ begin
   if not FileExists(SetupPath) then
     Exit;
 
-  // Always remove the watcher and its autostart entry. Leaving something
-  // behind that starts at sign-in after the program is gone would be wrong,
-  // so this is not a question - unlike the power settings below.
-  Exec(SetupPath, '--disable-autolock-silent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // Always remove the helper and its autostart entry. Leaving something behind
+  // that starts at sign-in after the program is gone would be wrong, so this is
+  // not a question - unlike the power settings below.
+  //
+  // Both the boolean return and ResultCode are checked. Discarding them meant an
+  // uninstall could report success while a sign-in entry survived, pointing into
+  // a folder about to be deleted, with no AFKLocker left to remove it.
+  Cleaned := Exec(SetupPath, '--disable-autolock-silent', '', SW_HIDE,
+                  ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+
+  if not Cleaned then
+  begin
+    Log('AFKLocker: helper cleanup did not complete (ResultCode ' + IntToStr(ResultCode) + ')');
+    if not UninstallSilent then
+      MsgBox('AFKLocker could not finish removing its background helper.' + #13#10 + #13#10 +
+             'A startup entry named "AFKLocker Watcher" may still exist. You can remove it ' +
+             'in Task Manager, under Startup apps.' + #13#10 + #13#10 +
+             'The uninstall will continue.',
+             mbInformation, MB_OK);
+  end;
 
   if UninstallSilent then
     ShouldRestore := True
@@ -127,7 +145,24 @@ begin
   if ShouldRestore then
   begin
     // A failure here must never block the uninstall: the backup files stay on
-    // disk either way, so the values can still be restored by hand.
-    Exec(SetupPath, '--restore-silent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // disk either way, so the values can still be restored by hand. It must not
+    // be silent either - the machine would keep running with the lid shut while
+    // the person believed they had put it back.
+    Restored := Exec(SetupPath, '--restore-silent', '', SW_HIDE,
+                     ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+
+    if not Restored then
+    begin
+      Log('AFKLocker: power settings restore did not complete (ResultCode ' + IntToStr(ResultCode) + ')');
+      if not UninstallSilent then
+        MsgBox('AFKLocker could not put all of the power settings back.' + #13#10 + #13#10 +
+               'This machine may still be set to keep running with the lid closed. Your ' +
+               'original values are still saved in:' + #13#10 +
+               ExpandConstant('{localappdata}\AFKLocker') + #13#10 + #13#10 +
+               'You can change them yourself in Control Panel, Power Options, Change plan ' +
+               'settings, Change advanced power settings.' + #13#10 + #13#10 +
+               'The uninstall will continue.',
+               mbInformation, MB_OK);
+    end;
   end;
 end;
