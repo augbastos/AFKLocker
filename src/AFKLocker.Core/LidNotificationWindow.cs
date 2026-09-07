@@ -1,9 +1,8 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
-using AFKLocker.Core;
 
-namespace AFKLocker.Watcher
+namespace AFKLocker.Core
 {
     /// <summary>
     /// Receives lid open/close events from Windows.
@@ -19,7 +18,7 @@ namespace AFKLocker.Watcher
     /// betting on an implementation detail. WS_EX_TOOLWINDOW keeps it out of
     /// the taskbar and Alt+Tab.
     /// </summary>
-    internal sealed class LidNotificationWindow : NativeWindow, ILidEventProvider
+    public sealed class LidNotificationWindow : NativeWindow, ILidEventProvider
     {
         // Documented in "Power Setting GUIDs": the Data member is a DWORD,
         // 0x0 = lid closed, 0x1 = lid opened.
