@@ -55,6 +55,7 @@ namespace AFKLocker.Setup
     {
         private const string RestoreSilentFlag = "--restore-silent";
         private const string DisableAutoLockSilentFlag = "--disable-autolock-silent";
+        private const string DiagnosticsFlag = "--diagnostics";
 
         [STAThread]
         private static int Main(string[] args)
@@ -69,6 +70,12 @@ namespace AFKLocker.Setup
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+
+            // Opens diagnostics straight away, without the main window. Useful
+            // when someone is being talked through a problem, and it makes the
+            // window reachable from a script.
+            if (HasFlag(args, DiagnosticsFlag))
+                return RunDiagnosticsOnly();
 
             try
             {
@@ -121,12 +128,30 @@ namespace AFKLocker.Setup
         {
             try
             {
-                CreateAutoLockManager().Cleanup();
-                return 0;
+                AutoLockResult result = CreateAutoLockManager().Cleanup();
+                return result.Success ? 0 : 1;
             }
             catch (Exception)
             {
                 // Never block an uninstall on this.
+                return 1;
+            }
+        }
+
+        private static int RunDiagnosticsOnly()
+        {
+            try
+            {
+                using (var form = new DiagnosticsForm(SetupForm.RunSelfTestOn, SetupForm.CreateLidTestOn))
+                {
+                    Application.Run(form);
+                }
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Diagnostics could not start.\r\n\r\n" + ex.Message,
+                    "AFKLocker Diagnostics", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }
         }

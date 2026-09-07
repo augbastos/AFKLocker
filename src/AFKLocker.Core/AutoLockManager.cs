@@ -1,7 +1,7 @@
 using System;
-using System.Diagnostics;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.IO;
-using System.Threading;
 using Microsoft.Win32;
 
 namespace AFKLocker.Core
@@ -85,132 +85,66 @@ namespace AFKLocker.Core
         }
     }
 
-    /// <summary>
-    /// Starting, stopping and checking the watcher process. An interface so the
-    /// manager's logic can be tested without launching anything.
-    /// </summary>
-    public interface IWatcherProcess
+    public enum AutoLockFailure
     {
-        bool IsRunning { get; }
-
-        /// <summary>Launches the watcher if it is not already running.</summary>
-        bool Start(string watcherPath);
-
-        /// <summary>Asks a running watcher to exit; true when none is left.</summary>
-        bool Stop(TimeSpan timeout);
+        None,
+        WatcherMissing,
+        SettingsWriteFailed,
+        AutostartFailed,
+        WatcherStartFailed,
+        WatcherNotReady,
+        StopFailed
     }
 
     /// <summary>
-    /// Starts and stops the watcher process, and reports whether one is running.
+    /// The outcome of an enable, disable or cleanup.
     ///
-    /// Coordination is by two named kernel objects in the session's own
-    /// namespace (Local\), so each signed-in user gets their own watcher and
-    /// switching users does not cross the wires.
+    /// A failure that was fully undone and a failure that left something behind
+    /// are different things, and the caller is told which happened rather than
+    /// getting a bare false.
     /// </summary>
-    public sealed class WatcherController : IWatcherProcess
+    public sealed class AutoLockResult
     {
-        /// <summary>Held for the lifetime of a running watcher.</summary>
-        public const string RunningMutexName = @"Local\AFKLocker.Watcher.Running";
+        public bool Success { get; private set; }
+        public AutoLockFailure Failure { get; private set; }
+        public string Message { get; private set; }
 
-        /// <summary>Signalled to ask a running watcher to exit.</summary>
-        public const string StopEventName = @"Local\AFKLocker.Watcher.Stop";
+        /// <summary>True when a failure was undone, returning to the previous state.</summary>
+        public bool RolledBack { get; private set; }
 
-        public const string WatcherFileName = "AFKLockerWatcher.exe";
+        /// <summary>Anything the operation could not put back or clean up.</summary>
+        public ReadOnlyCollection<string> Residue { get; private set; }
 
-        /// <summary>How long to wait for a launched watcher to register itself.</summary>
-        private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(10);
-
-        /// <summary>True when a watcher is running in this session.</summary>
-        public bool IsRunning
+        internal AutoLockResult(bool success, AutoLockFailure failure, string message,
+            bool rolledBack, IList<string> residue)
         {
-            get { return IsAnyRunning; }
+            Success = success;
+            Failure = failure;
+            Message = message;
+            RolledBack = rolledBack;
+            Residue = new ReadOnlyCollection<string>(residue ?? new List<string>());
         }
 
-        /// <summary>True when a watcher is running in this session.</summary>
-        public static bool IsAnyRunning
+        /// <summary>True when nothing was left in an in-between state.</summary>
+        public bool IsClean
         {
-            get
-            {
-                bool createdNew;
-                // Opening the mutex is enough: if we created it, nobody held it.
-                using (var mutex = new Mutex(false, RunningMutexName, out createdNew))
-                {
-                    return !createdNew;
-                }
-            }
+            get { return Residue.Count == 0; }
         }
 
-        /// <summary>Full path of the watcher that sits next to the running program.</summary>
-        public static string DefaultWatcherPath
+        public static AutoLockResult Ok()
         {
-            get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, WatcherFileName); }
+            return new AutoLockResult(true, AutoLockFailure.None, null, false, null);
         }
 
-        /// <summary>
-        /// Launches the watcher if it is not already running.
-        /// </summary>
-        /// <returns>False when the watcher executable is missing.</returns>
-        public bool Start(string watcherPath)
+        public static AutoLockResult Ok(IList<string> residue)
         {
-            if (string.IsNullOrEmpty(watcherPath)) throw new ArgumentException("watcherPath must not be empty", "watcherPath");
-            if (!File.Exists(watcherPath)) return false;
-            if (IsAnyRunning) return true;
-
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = watcherPath,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = Path.GetDirectoryName(watcherPath) ?? string.Empty
-            };
-            Process.Start(startInfo);
-
-            // Process.Start returns as soon as the process exists, which is well
-            // before it has started the runtime and claimed the mutex. Without
-            // this wait, anything that checks the status immediately afterwards
-            // - the setup window refreshes right after enabling - sees "not
-            // running" and reports a failure that did not happen.
-            return WaitUntilRunning(StartupTimeout);
+            return new AutoLockResult(true, AutoLockFailure.None, null, false, residue);
         }
 
-        private static bool WaitUntilRunning(TimeSpan timeout)
+        public override string ToString()
         {
-            var deadline = DateTime.UtcNow + timeout;
-            while (DateTime.UtcNow < deadline)
-            {
-                if (IsAnyRunning) return true;
-                Thread.Sleep(50);
-            }
-            return IsAnyRunning;
-        }
-
-        /// <summary>
-        /// Asks a running watcher to exit and waits briefly for it to do so.
-        /// </summary>
-        /// <returns>True when no watcher is running afterwards.</returns>
-        public bool Stop(TimeSpan timeout)
-        {
-            if (!IsAnyRunning) return true;
-
-            try
-            {
-                using (var stop = EventWaitHandle.OpenExisting(StopEventName))
-                    stop.Set();
-            }
-            catch (WaitHandleCannotBeOpenedException)
-            {
-                // No watcher listening. Nothing to stop.
-                return !IsAnyRunning;
-            }
-
-            var deadline = DateTime.UtcNow + timeout;
-            while (DateTime.UtcNow < deadline)
-            {
-                if (!IsAnyRunning) return true;
-                Thread.Sleep(50);
-            }
-
-            return !IsAnyRunning;
+            if (Success) return IsClean ? "ok" : "ok with residue";
+            return string.Format("{0}: {1}", Failure, Message);
         }
     }
 
@@ -219,13 +153,60 @@ namespace AFKLocker.Core
     {
         public LockMode Mode { get; set; }
         public bool AutostartRegistered { get; set; }
-        public bool WatcherRunning { get; set; }
+        public WatcherState WatcherState { get; set; }
         public bool WatcherInstalled { get; set; }
+
+        public bool WatcherReady
+        {
+            get { return WatcherState == WatcherState.Ready; }
+        }
+
+        /// <summary>
+        /// Describes any mismatch between what was configured and what is
+        /// actually true, or null when they agree.
+        /// </summary>
+        public string Inconsistency
+        {
+            get
+            {
+                if (Mode == LockMode.Automatic)
+                {
+                    if (!WatcherInstalled)
+                        return "Automatic mode is on, but the watcher program is missing.";
+                    if (WatcherState == WatcherState.NotRunning)
+                        return "Automatic mode is on, but no watcher is running.";
+                    if (WatcherState == WatcherState.Unhealthy)
+                        return "Automatic mode is on, but the watcher is in an unhealthy state.";
+                    if (!AutostartRegistered)
+                        return "Automatic mode is on, but the watcher is not set to start at sign-in.";
+                    return null;
+                }
+
+                if (AutostartRegistered)
+                    return "Manual mode, but a watcher is still set to start at sign-in.";
+                if (WatcherState != WatcherState.NotRunning)
+                    return "Manual mode, but a watcher is still running.";
+                return null;
+            }
+        }
+
+        public bool IsConsistent
+        {
+            get { return Inconsistency == null; }
+        }
     }
 
     /// <summary>
-    /// Turns automatic locking on and off: the setting, the autostart entry and
-    /// the running watcher are kept consistent with each other.
+    /// Turns automatic locking on and off.
+    ///
+    /// Enabling touches three things - the saved mode, the autostart entry and
+    /// the running process - and any of them can fail. Rather than leaving the
+    /// machine half-configured, enable is transactional: each step records how
+    /// to undo itself, and a failure at any point unwinds the ones before it.
+    ///
+    /// The result is that Enable leaves exactly one of two states behind:
+    /// automatic and genuinely working, or manual and clean. Anything it could
+    /// not undo is reported as residue rather than passed over.
     /// </summary>
     public sealed class AutoLockManager
     {
@@ -248,54 +229,293 @@ namespace AFKLocker.Core
             _watcherPath = watcherPath;
         }
 
+        private bool WatcherInstalled
+        {
+            get { return !string.IsNullOrEmpty(_watcherPath) && File.Exists(_watcherPath); }
+        }
+
+        private string AutostartCommand
+        {
+            get { return "\"" + _watcherPath + "\""; }
+        }
+
         public AutoLockStatus GetStatus()
         {
             return new AutoLockStatus
             {
                 Mode = _settings.Load().Mode,
                 AutostartRegistered = _autostart.IsRegistered,
-                WatcherRunning = _watcher.IsRunning,
-                WatcherInstalled = !string.IsNullOrEmpty(_watcherPath) && File.Exists(_watcherPath)
+                WatcherState = _watcher.GetState(),
+                WatcherInstalled = WatcherInstalled
             };
         }
 
-        /// <summary>
-        /// Switches to automatic locking: remembers the mode, registers the
-        /// watcher to start at sign-in, and starts it now.
-        /// </summary>
-        /// <returns>False when the watcher executable is missing.</returns>
-        public bool Enable()
-        {
-            if (string.IsNullOrEmpty(_watcherPath) || !File.Exists(_watcherPath))
-                return false;
+        // ------------------------------------------------------------- enable ---
 
-            _settings.Save(new AutoLockSettings { Mode = LockMode.Automatic });
-            _autostart.Register("\"" + _watcherPath + "\"");
-            return _watcher.Start(_watcherPath);
+        /// <summary>
+        /// Switches to automatic locking, or leaves the machine exactly as it
+        /// was. There is no third outcome.
+        /// </summary>
+        public AutoLockResult Enable()
+        {
+            if (!WatcherInstalled)
+                return new AutoLockResult(false, AutoLockFailure.WatcherMissing,
+                    "AFKLockerWatcher.exe was not found next to this program.", false, null);
+
+            // Undo steps, innermost last; run in reverse on failure.
+            var undo = new List<UndoStep>();
+
+            // 1. Remember the mode. Saved first so that a watcher which starts
+            //    and immediately looks at the settings sees the intended state.
+            AutoLockSettings previousSettings;
+            try
+            {
+                previousSettings = _settings.Load();
+            }
+            catch (Exception ex)
+            {
+                return Failure(AutoLockFailure.SettingsWriteFailed,
+                    "Could not read the current settings: " + ex.Message, undo);
+            }
+
+            try
+            {
+                _settings.Save(new AutoLockSettings { Mode = LockMode.Automatic });
+                undo.Add(new UndoStep("saved mode", delegate { _settings.Save(previousSettings); }));
+            }
+            catch (Exception ex)
+            {
+                return Failure(AutoLockFailure.SettingsWriteFailed,
+                    "Could not save the lock mode: " + ex.Message, undo);
+            }
+
+            // 2. Autostart, so it comes back at the next sign-in.
+            string previousCommand;
+            try
+            {
+                previousCommand = _autostart.RegisteredCommand;
+                _autostart.Register(AutostartCommand);
+                string restoreTo = previousCommand;
+                undo.Add(new UndoStep("autostart entry", delegate
+                {
+                    if (restoreTo == null) _autostart.Unregister();
+                    else _autostart.Register(restoreTo);
+                }));
+            }
+            catch (Exception ex)
+            {
+                return Failure(AutoLockFailure.AutostartFailed,
+                    "Could not register the watcher to start at sign-in: " + ex.Message, undo);
+            }
+
+            // 3. Start it now, and wait until it is genuinely able to lock.
+            WatcherStartResult start;
+            try
+            {
+                start = _watcher.Start(_watcherPath);
+            }
+            catch (Exception ex)
+            {
+                return Failure(AutoLockFailure.WatcherStartFailed,
+                    "Could not start the watcher: " + ex.Message, undo);
+            }
+
+            if (!start.Success)
+            {
+                AutoLockFailure failure = start.Failure == WatcherStartFailure.ReadyTimeout
+                    || start.Failure == WatcherStartFailure.LidNotificationFailed
+                    ? AutoLockFailure.WatcherNotReady
+                    : AutoLockFailure.WatcherStartFailed;
+
+                // Stop reports refusal by returning false, not by throwing. The
+                // undo has to turn that into a failure, or a watcher that would
+                // not stop is reported as a clean rollback while still running.
+                undo.Add(new UndoStep("watcher process", delegate
+                {
+                    if (!_watcher.Stop(StopTimeout))
+                        throw new InvalidOperationException("it did not stop in time");
+                }));
+                return Failure(failure, start.Message, undo);
+            }
+
+            return AutoLockResult.Ok();
         }
 
-        /// <summary>
-        /// Switches back to manual: stops the watcher, removes the autostart
-        /// entry, and records the mode. After this nothing of AFKLocker is
-        /// resident.
-        /// </summary>
-        public bool Disable()
+        /// <summary>Unwinds the steps that succeeded, then reports what happened.</summary>
+        private static AutoLockResult Failure(AutoLockFailure failure, string message, List<UndoStep> undo)
         {
-            bool stopped = _watcher.Stop(StopTimeout);
-            _autostart.Unregister();
-            _settings.Save(new AutoLockSettings { Mode = LockMode.Manual });
-            return stopped;
+            var residue = new List<string>();
+
+            for (int i = undo.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    undo[i].Undo();
+                }
+                catch (Exception ex)
+                {
+                    // Rollback itself can fail. Say so rather than claiming a
+                    // clean revert - this is exactly the state a user needs to
+                    // know about.
+                    residue.Add(string.Format("could not undo the {0}: {1}", undo[i].Description, ex.Message));
+                }
+            }
+
+            return new AutoLockResult(false, failure, message, undo.Count > 0, residue);
+        }
+
+        private sealed class UndoStep
+        {
+            private readonly Action _undo;
+
+            public string Description { get; private set; }
+
+            public UndoStep(string description, Action undo)
+            {
+                Description = description;
+                _undo = undo;
+            }
+
+            public void Undo()
+            {
+                _undo();
+            }
+        }
+
+        // ------------------------------------------------------------ disable ---
+
+        /// <summary>
+        /// Switches back to manual. Unlike enable there is nothing to roll back
+        /// to - the safest reachable state is always "manual and clean" - so
+        /// every step is attempted even if an earlier one fails, and whatever
+        /// could not be undone is reported.
+        /// </summary>
+        public AutoLockResult Disable()
+        {
+            var residue = new List<string>();
+            bool stopped = StopWatcher(residue);
+            RemoveAutostart(residue);
+
+            try
+            {
+                _settings.Save(new AutoLockSettings { Mode = LockMode.Manual });
+            }
+            catch (Exception ex)
+            {
+                residue.Add("the saved mode still says automatic: " + ex.Message);
+                return new AutoLockResult(false, AutoLockFailure.SettingsWriteFailed,
+                    "Could not save the lock mode: " + ex.Message, false, residue);
+            }
+
+            if (!stopped)
+                return new AutoLockResult(false, AutoLockFailure.StopFailed,
+                    "Automatic locking is off and will not start again, but the watcher "
+                    + "did not stop in time.", false, residue);
+
+            return AutoLockResult.Ok(residue);
         }
 
         /// <summary>
         /// Removes every trace of automatic locking without recording a mode.
-        /// Used by the uninstaller.
+        /// Used by the uninstaller, where the user's preference is about to stop
+        /// existing anyway.
         /// </summary>
-        public bool Cleanup()
+        public AutoLockResult Cleanup()
         {
-            bool stopped = _watcher.Stop(StopTimeout);
-            _autostart.Unregister();
-            return stopped;
+            var residue = new List<string>();
+            bool stopped = StopWatcher(residue);
+            RemoveAutostart(residue);
+
+            if (!stopped)
+                return new AutoLockResult(false, AutoLockFailure.StopFailed,
+                    "The watcher did not stop in time.", false, residue);
+
+            return AutoLockResult.Ok(residue);
+        }
+
+        private bool StopWatcher(List<string> residue)
+        {
+            try
+            {
+                if (_watcher.Stop(StopTimeout)) return true;
+
+                // Stop returns false for two different situations, and saying
+                // the wrong one sends the user looking for the wrong thing.
+                residue.Add(_watcher.GetState() == WatcherState.Unhealthy
+                    ? "a stale watcher readiness signal is still present"
+                    : "a watcher process is still running");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                residue.Add("could not stop the watcher: " + ex.Message);
+                return false;
+            }
+        }
+
+        private void RemoveAutostart(List<string> residue)
+        {
+            try
+            {
+                _autostart.Unregister();
+            }
+            catch (Exception ex)
+            {
+                residue.Add("the sign-in entry could not be removed: " + ex.Message);
+            }
+        }
+
+        // -------------------------------------------------------- reconciling ---
+
+        /// <summary>
+        /// Brings reality back in line with the saved mode, and reports what it
+        /// had to do.
+        ///
+        /// Called when the setup window opens. Things drift for ordinary
+        /// reasons: the watcher was killed by Task Manager, a cleanup tool
+        /// removed the startup entry, a crash left a stale readiness signal. The
+        /// window would otherwise show a broken state and expect the user to
+        /// work out the fix.
+        ///
+        /// If automatic mode cannot be restored, it converges to manual and
+        /// clean rather than leaving a half-configured machine.
+        /// </summary>
+        public AutoLockResult Reconcile()
+        {
+            AutoLockStatus status = GetStatus();
+            if (status.IsConsistent) return AutoLockResult.Ok();
+
+            if (status.Mode == LockMode.Manual)
+            {
+                // Manual must mean nothing resident.
+                var residue = new List<string>();
+                StopWatcher(residue);
+                RemoveAutostart(residue);
+                return AutoLockResult.Ok(residue);
+            }
+
+            if (!status.WatcherInstalled)
+            {
+                // Automatic without a watcher binary cannot be repaired.
+                AutoLockResult disabled = Disable();
+                return new AutoLockResult(false, AutoLockFailure.WatcherMissing,
+                    "Automatic locking was switched off: the watcher program is missing.",
+                    true, disabled.Residue);
+            }
+
+            // Automatic, but something is missing. Re-running enable puts the
+            // mode, the autostart entry and the process back together, and rolls
+            // back to a clean manual state if it cannot.
+            AutoLockResult repaired = Enable();
+            if (repaired.Success) return repaired;
+
+            AutoLockResult fallback = Disable();
+            var combined = new List<string>(repaired.Residue);
+            foreach (string item in fallback.Residue) combined.Add(item);
+
+            return new AutoLockResult(false, repaired.Failure,
+                "Automatic locking could not be restored and has been switched off: " + repaired.Message,
+                true, combined);
         }
     }
 }
