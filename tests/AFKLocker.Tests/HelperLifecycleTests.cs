@@ -25,7 +25,8 @@ namespace AFKLocker.Tests
         private static AutoLockManager Manager(FakeSettingsStore settings,
             FakeAutostartRegistry autostart, FakeWatcherProcess watcher)
         {
-            return new AutoLockManager(settings, autostart, watcher, ExistingHelper);
+            return new AutoLockManager(settings, autostart, watcher, ExistingHelper,
+                TestElevation.No);
         }
 
         private static void AssertNoHelper(FakeAutostartRegistry autostart,
@@ -437,7 +438,7 @@ namespace AFKLocker.Tests
 
             // No helper binary, so the features cannot be restored at all.
             var manager = new AutoLockManager(settings, autostart, watcher,
-                @"C:\nowhere\AFKLockerWatcher.exe");
+                @"C:\nowhere\AFKLockerWatcher.exe", TestElevation.No);
 
             AutoLockResult result = manager.Reconcile();
 

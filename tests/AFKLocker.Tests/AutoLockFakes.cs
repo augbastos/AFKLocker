@@ -10,6 +10,21 @@ namespace AFKLocker.Tests
     }
 
     /// <summary>
+    /// The elevation answer for every test that is not about elevation.
+    ///
+    /// <see cref="AutoLockManager"/> reads the real process token by default,
+    /// and a CI runner is an administrator - so leaving it to the default made
+    /// the whole suite pass on a developer machine and fail on the build,
+    /// answering a question none of those tests were asking. Elevation is
+    /// covered deliberately, in ElevationTests, where both answers are given on
+    /// purpose.
+    /// </summary>
+    internal static class TestElevation
+    {
+        public static readonly Func<bool> No = delegate { return false; };
+    }
+
+    /// <summary>
     /// Settings store that can be told to fail, so the rollback paths are
     /// reachable from a test rather than only in the field.
     /// </summary>

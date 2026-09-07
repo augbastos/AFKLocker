@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Threading;
 
@@ -176,20 +177,48 @@ namespace AFKLocker.Core
             _isElevated = isElevated ?? new Func<bool>(CurrentProcessIsElevated);
         }
 
+        /// <summary>TOKEN_INFORMATION_CLASS.TokenElevationType.</summary>
+        private const int TokenElevationType = 18;
+
+        /// <summary>The user's ordinary token: UAC off, or the built-in Administrator.</summary>
+        private const int TokenElevationTypeDefault = 1;
+
+        /// <summary>Raised above the ordinary token - what a UAC prompt produces.</summary>
+        private const int TokenElevationTypeFull = 2;
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetTokenInformation(IntPtr tokenHandle, int tokenInformationClass,
+            out int tokenInformation, int tokenInformationLength, out int returnLength);
+
         /// <summary>
-        /// True when this process holds an administrator token.
+        /// True when this process was raised above the token it would ordinarily
+        /// have - what Setup's UAC relaunch produces, and what a child process
+        /// would inherit.
         ///
-        /// Setup can be relaunched elevated, because some power settings need
-        /// it. Nothing else about AFKLocker does, and a process started from
-        /// there inherits the token - so the check exists to keep the helper out
-        /// of that inheritance.
+        /// Deliberately not "is this an administrator". On a machine with UAC
+        /// switched off, and under the built-in Administrator account, every
+        /// process carries the administrator token, including the helper the
+        /// user starts themselves - so answering "administrator" there would
+        /// refuse a launch that is not an escalation at all, and the background
+        /// features would simply stop working with no way to switch them back
+        /// on. TokenElevationType tells the two apart: Default is the user's
+        /// ordinary token however powerful it is, Full is one that was raised.
         /// </summary>
         public static bool CurrentProcessIsElevated()
         {
             try
             {
                 using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
-                    return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+                {
+                    int elevationType;
+                    int returned;
+                    if (!GetTokenInformation(identity.Token, TokenElevationType,
+                            out elevationType, sizeof(int), out returned))
+                        return false;
+
+                    return elevationType == TokenElevationTypeFull;
+                }
             }
             catch (Exception)
             {
