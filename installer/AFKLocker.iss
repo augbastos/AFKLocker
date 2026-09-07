@@ -9,11 +9,12 @@
 ; Expects the compiled binaries in build\ (run tools\Build.ps1 first).
 
 #define AppName        "AFKLocker"
-#define AppVersion     "0.1.1"
+#define AppVersion     "0.2.0"
 #define AppPublisher   "Augusto Bastos"
 #define AppUrl         "https://github.com/augbastos/AFKLocker"
 #define AppExe         "AFKLocker.exe"
 #define SetupExe       "AFKLockerSetup.exe"
+#define WatcherExe     "AFKLockerWatcher.exe"
 
 [Setup]
 AppId={{7C4E1F2A-9B3D-4E6F-8A15-2D7C4B9E0A33}
@@ -52,6 +53,8 @@ Name: "displayoff"; Description: "Also create a ""Display Off"" shortcut"; Group
 [Files]
 Source: "..\build\AFKLocker.exe";       DestDir: "{app}"; Flags: ignoreversion
 Source: "..\build\AFKLockerSetup.exe";  DestDir: "{app}"; Flags: ignoreversion
+; Always installed, but only ever runs if the user turns on automatic locking.
+Source: "..\build\AFKLockerWatcher.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\build\AFKLocker.Core.dll";  DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md";                 DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE";                   DestDir: "{app}"; Flags: ignoreversion
@@ -64,7 +67,8 @@ Name: "{autodesktop}\{#AppName} Display Off"; Filename: "{app}\{#AppExe}"; Param
 
 [Run]
 ; Opening setup after install is the honest default: AFKLocker is not useful
-; until Windows is actually configured for closed-lid operation.
+; until Windows is actually configured for closed-lid operation. Installing
+; never turns automatic locking on - that is a choice made in Setup.
 Filename: "{app}\{#SetupExe}"; Description: "Check this machine's power settings now"; Flags: postinstall nowait skipifsilent
 
 [Code]
@@ -85,6 +89,11 @@ begin
   SetupPath := ExpandConstant('{app}\{#SetupExe}');
   if not FileExists(SetupPath) then
     Exit;
+
+  // Always remove the watcher and its autostart entry. Leaving something
+  // behind that starts at sign-in after the program is gone would be wrong,
+  // so this is not a question - unlike the power settings below.
+  Exec(SetupPath, '--disable-autolock-silent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
   if UninstallSilent then
     ShouldRestore := True

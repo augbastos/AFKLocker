@@ -35,7 +35,7 @@ jobs:
           # Portable zip: the binaries with no installer, for people who would
           # rather place them themselves.
           New-Item -ItemType Directory -Force -Path portable | Out-Null
-          Copy-Item build/AFKLocker.exe, build/AFKLockerSetup.exe, build/AFKLocker.Core.dll, LICENSE, README.md portable/
+          Copy-Item build/AFKLocker.exe, build/AFKLockerSetup.exe, build/AFKLockerWatcher.exe, build/AFKLocker.Core.dll, LICENSE, README.md portable/
           $version = "${{ github.event.inputs.tag || github.ref_name }}" -replace '^v', ''
           Compress-Archive -Path portable/* -DestinationPath "dist/AFKLocker-$version-portable.zip"
 
