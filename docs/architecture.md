@@ -28,21 +28,64 @@ fair trade for a zero-dependency build.
 `tools/Build.ps1` passes `/warnaserror+` with `/warn:4`, so compiler warnings fail the build.
 That is the static analysis gate; there is no separate linter.
 
-## Two executables, neither resident
+## Three executables, and only one that can be resident
 
 | Binary | Type | Job |
 |---|---|---|
 | `AFKLocker.exe` | `winexe` | Lock the session and exit. |
-| `AFKLockerSetup.exe` | `winexe` | Check readiness, configure, restore. |
+| `AFKLockerSetup.exe` | `winexe` | Check readiness, configure, restore, choose lock mode. |
+| `AFKLockerWatcher.exe` | `winexe` | Optional. Lock when the lid closes. |
 | `AFKLocker.Core.dll` | library | All the logic worth testing. |
 
-Both are `winexe` rather than `exe` so double-clicking never flashes a console window. That
-single compiler flag is most of what "feels like a real utility" means in practice.
+All are `winexe` rather than `exe` so nothing ever flashes a console window. That single compiler
+flag is most of what "feels like a real utility" means in practice.
 
-**No background service, no tray icon, no scheduled task.** What keeps the machine awake with the
-lid closed is the Windows power configuration, which persists on its own. A resident process
-would add a failure mode (what if it crashes?), an attack surface, and a thing to uninstall, in
-exchange for nothing. AFKLocker runs for a few milliseconds and exits.
+**AFKLocker remains non-resident by default. Automatic lid lock is explicitly opt-in, and is the
+only feature that requires a user-session background process.**
+
+The original design note said "no background service, no tray icon, no scheduled task", and that
+is still true of manual mode and still the reason it is the default: what keeps the machine awake
+with the lid closed is the Windows power configuration, which persists on its own. A process
+holding that open would add a failure mode, an attack surface and a thing to uninstall, in
+exchange for nothing.
+
+Automatic locking is different in kind. Nothing in the power configuration can express "lock when
+the lid closes" - that is not a power setting, it is a reaction to an event, and something has to
+be listening. So the watcher exists, and the cost is contained deliberately:
+
+- it runs **only** when the user switches the mode on;
+- it is a **user-session process**, not a service - it must be in the interactive session to
+  receive `GUID_LIDSWITCH_STATE_CHANGE` and to lock that session, and it needs no elevation to do
+  either;
+- it **does not poll**. The process is blocked in a message loop until Windows posts an event.
+  Idle it holds roughly 5 MB and no measurable CPU;
+- it has **one job**. It does not change power settings, hold execution state, or keep the
+  machine awake. Those responsibilities stay with the power configuration, and Setup shows the
+  two separately so nobody assumes one implies the other.
+
+The startup working set is handed back with `SetProcessWorkingSetSize(-1, -1)` once registration
+is done: a process that will sit idle for hours has no business holding the pages the CLR touched
+while starting. That took idle memory from about 23 MB to about 5 MB.
+
+## Autostart: HKCU Run
+
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, one value, written when automatic mode is
+turned on and deleted when it is turned off or the program is uninstalled.
+
+Considered and rejected:
+
+- **A Windows service.** Wrong session. A service runs in session 0 and cannot lock the user's
+  interactive session or receive its power notifications; it would also need administrator rights
+  to install, for a feature that otherwise needs none.
+- **A scheduled task.** It works, but it is a heavier object to create, inspect and remove, and
+  it can require elevation depending on how it is registered. Nothing about this problem needs a
+  scheduler.
+- **The Startup folder.** Roughly equivalent, but it means shipping and cleaning up a `.lnk`
+  rather than setting and deleting a string.
+
+The Run key is the smallest mechanism that does the job, needs no elevation, is one value to
+remove, and — the part that matters most — is **visible to the user** in Task Manager's Startup
+tab. A background process that starts itself should be findable by the person whose machine it is.
 
 ## The power API, not `powercfg.exe`
 
@@ -59,6 +102,32 @@ One thing this surfaced: `SYSTEM_POWER_CAPABILITIES.LidPresent` returns **false*
 this was developed on, which certainly has a lid. So readiness checks key off whether the lid
 close *setting* exists, and the capability flag is only used to word a message.
 
+## Lid events: the window is not message-only
+
+The watcher owns a hidden window and registers it with
+`RegisterPowerSettingNotification(hwnd, &GUID_LIDSWITCH_STATE_CHANGE, DEVICE_NOTIFY_WINDOW_HANDLE)`.
+Windows then posts `WM_POWERBROADCAST` / `PBT_POWERSETTINGCHANGE`, and the payload is a
+`POWERBROADCAST_SETTING` whose `Data` is a DWORD: `0` closed, `1` opened.
+
+That window is an ordinary top-level window that is simply never shown, with `WS_EX_TOOLWINDOW` to
+keep it out of the taskbar and Alt+Tab — **not** a message-only (`HWND_MESSAGE`) window.
+Message-only windows are documented as not receiving broadcast messages, and `WM_POWERBROADCAST`
+is one. Registration does deliver directly to the registered handle, so a message-only window may
+well work, but relying on that is betting on an implementation detail to save nothing.
+
+Three behaviours fall out of the documentation and are worth stating:
+
+- **The first event is a position, not a change.** Windows reports the current lid state as soon
+  as you register. Acting on it would lock the session of someone working on an external monitor
+  with the laptop docked shut, which is the worst possible moment to do it. The policy ignores the
+  first event it sees, and does the same after a resume, when the lid may have moved unobserved.
+- **No event at all is the "no lid" answer.** The docs say the callback is not made "until a lid
+  device is found and its current state is known". Registration succeeds on a desktop; nothing
+  ever arrives. There is no up-front way to distinguish that from a lid that has not moved yet, so
+  the UI says what it knows rather than claiming support.
+- **Opening never unlocks.** Not after resume, not after a watcher restart, not ever. Security
+  beats convenience, and the code has no unlock path at all.
+
 ## Everything testable is behind an interface
 
 `ISessionLocker` exists for one reason: a test that called `LockWorkStation` for real would lock
@@ -66,8 +135,14 @@ the machine running the test suite. `IPowerConfiguration`, `IPowerInformation` a
 exist so the test suite can describe machines that don't exist here - a desktop with no lid, a
 laptop with hibernation on, a domain machine where every write is refused.
 
-The logic that decides things (`ReadinessEvaluator`, `ConfigurationPlanner`, `PowerBackup`) is
-pure: it takes a snapshot and returns a verdict. That is where the tests concentrate.
+Automatic lock adds `ILidEventProvider` (so lid events can be simulated with no laptop),
+`ISessionState`, `IAutostartRegistry` and `IWatcherProcess` (so enabling and disabling can be
+tested without writing to the registry or launching anything).
+
+The logic that decides things (`ReadinessEvaluator`, `ConfigurationPlanner`, `PowerBackup`,
+`AutoLockPolicy`) is pure: it takes input and returns a verdict. That is where the tests
+concentrate. `AutoLockPolicy` in particular is where every awkward lid case is decided - first
+event, repeats, opening, an already-locked session - so each one is a test rather than a comment.
 
 ## Backups are plain text, one file per power plan
 
