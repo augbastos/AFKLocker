@@ -3,6 +3,36 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-09-06
+
+### Added
+
+- **Automatic lid lock**, an opt-in mode that locks Windows when the laptop lid closes.
+  Manual double-click remains the default and is unchanged.
+  - `AFKLockerWatcher.exe` - a windowless user-session process that registers for
+    `GUID_LIDSWITCH_STATE_CHANGE` and locks on a close event. No polling, no tray icon, no
+    console, no network. Idle footprint is roughly 5 MB.
+  - Autostart via one `HKCU\...\CurrentVersion\Run` value, written when the mode is turned on and
+    removed when it is turned off or the program is uninstalled.
+  - `--status` and `--stop` on the watcher for diagnostics.
+- **Lock behaviour** section in Setup, separate from closed-lid readiness, showing the mode and
+  whether the watcher is installed and running.
+- Setup reports when automatic lock will work but Windows may still sleep on battery, rather than
+  letting the two look like one setting.
+- `tools/Test-AutoLock-Integration.ps1` - end-to-end check of enabling and disabling automatic
+  lock against the real settings file, registry and watcher process, including that the watcher
+  holds no network handles and no power requests.
+
+### Behaviour worth knowing
+
+- Opening the lid never unlocks anything, in any circumstance.
+- The first lid event after the watcher starts is treated as a starting position rather than a
+  change, so a laptop that is already docked and shut does not get locked out from under someone
+  working on an external monitor. The same reset happens after resume.
+- The watcher never changes power settings and never keeps the machine awake by itself.
+- Installing does not enable automatic mode. Upgrading from 0.1.x keeps manual mode, the desktop
+  shortcut, and any existing power settings backup.
+
 ## [0.1.1] - 2026-09-06
 
 ### Fixed
@@ -45,5 +75,6 @@ Initial release.
   covered by tests against simulated machines.
 - Binaries are not code-signed, so SmartScreen will warn on first run.
 
+[0.2.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.2.0
 [0.1.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.1.1
 [0.1.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.1.0

@@ -19,6 +19,37 @@ lock the session before you leave.
 
 ---
 
+## Two ways to lock
+
+**Manual** — the default. Nothing of AFKLocker stays running.
+
+```
+Double-click AFKLocker
+        ↓
+Windows locks
+        ↓
+Close the lid
+        ↓
+Work keeps running
+```
+
+**Automatic** — opt-in. Closing the lid is itself the instruction to lock.
+
+```
+Close the lid
+        ↓
+AFKLocker locks Windows
+        ↓
+Work keeps running
+```
+
+Manual remains the default because AFKLocker does not need to stay resident to do its job.
+Automatic mode is there for people who move between places often and want lid-close itself to
+mean "lock and keep working". You turn it on in AFKLocker Setup; it is never enabled by
+installing.
+
+---
+
 ## Why AFKLocker
 
 Closing a laptop lid normally means "stop". That is the right default for most people and the
@@ -108,10 +139,50 @@ change them unless you tick the box.
 |---|---|
 | Double-click **AFKLocker** | The session locks immediately. No window appears. |
 | `AFKLocker.exe --display-off` | Turns the display off without locking. Any key or mouse move brings it back. |
-| **AFKLocker Setup** | The readiness window: check, configure, restore. |
+| **AFKLocker Setup** | Readiness, lock behaviour, restore. |
 
 The `--display-off` shortcut is optional at install time (unticked by default). It is useful on a
 desktop, or when you want the screen off but are staying at the machine.
+
+## Automatic lid lock
+
+Switch **Lock behaviour** to **Automatic** in Setup and closing the lid locks Windows by itself.
+
+Here is the case it exists for. You are working somewhere public — a library, a café, a shared
+office. A build is running, or a download, or a server, or an agent. You shut the laptop, walk to
+another room, and open it again: Windows asks for your PIN, and everything you left running is
+still running, in the same session, exactly where it was.
+
+**What turning it on actually does:**
+
+- A small process, `AFKLockerWatcher.exe`, starts when you sign in. It has no window, no tray
+  icon and no console.
+- It asks Windows to tell it when the lid moves (`GUID_LIDSWITCH_STATE_CHANGE`) and then sleeps.
+  There is no polling: it is blocked in a message loop until Windows posts an event. Idle, it
+  holds around 5 MB and uses no measurable CPU.
+- When the lid closes, it calls `LockWorkStation`. That is the entire job.
+
+**What it deliberately does not do:**
+
+- **It never unlocks.** Opening the lid leaves Windows on the lock screen. Every time.
+- **It does not touch power settings** and does not keep the machine awake by itself. Staying
+  awake with the lid shut is the job of the settings above; these are two separate things, and
+  Setup shows them separately for that reason.
+- **It does not watch what you are running**, or care when it finishes.
+
+Turn it off and the watcher stops, the sign-in entry is removed, and nothing of AFKLocker is
+resident again. Uninstalling does the same, without asking.
+
+**Two details worth knowing:**
+
+- The first lid event after the watcher starts is treated as a starting position, not a change,
+  so it never locks on its own. This matters if you work with the laptop docked and shut on an
+  external monitor — starting the watcher there will not lock you out.
+- Automatic lock works regardless of your battery settings, but if Windows is still set to sleep
+  when the lid closes on battery, it will lock and *then* sleep. Setup says so when that applies.
+
+For diagnostics: `AFKLockerWatcher.exe --status` reports the mode, whether a watcher is running,
+and the autostart entry; `--stop` asks a running one to exit.
 
 ## Power settings AFKLocker changes
 
@@ -128,6 +199,9 @@ Only these, only on the active power plan, and only after you confirm:
 
 **The display timeout is never touched.** AFKLocker keeps the *system* awake, not the *screen*.
 Your monitor can and should still turn off on its own.
+
+**The automatic-lock watcher changes none of these.** It only locks. Whether the machine keeps
+running with the lid shut is decided entirely by the table above, in both modes.
 
 Settings are read and written through the documented `powrprof.dll` power scheme API
 (`PowerReadACValueIndex`, `PowerWriteACValueIndex`, `PowerSetActiveScheme`), not by parsing
@@ -163,9 +237,19 @@ Two details that matter:
 
 ## Safety
 
-**Never leave a running, lid-closed laptop inside a bag, sleeve, drawer or any other poorly
-ventilated enclosure.** A machine that isn't sleeping is still generating heat, and a closed
-space traps it. This is the one rule to take seriously.
+**Never leave a running, lid-closed laptop inside a bag, sleeve, drawer, backpack or any other
+poorly ventilated enclosure.** A machine that isn't sleeping is still generating heat, and a
+closed space traps it. This is the one rule to take seriously, and automatic mode makes it matter
+more: when lid-close means "lock", it stops being a deliberate decision to leave the machine
+running, and starts being a habit.
+
+|  | |
+|---|---|
+| **Fine** | Closed on a desk. Carried briefly in open air. Under your arm with the vents clear. |
+| **Don't** | Closed inside a backpack or padded sleeve while a build runs. Any confined space. Anything that blocks the vents. |
+
+This is not a guarantee about your particular hardware. Thermal behaviour varies by model,
+ambient temperature and workload; when in doubt, be conservative and let the machine sleep.
 
 Also worth knowing:
 
@@ -205,14 +289,33 @@ to pretend otherwise.
 - **It doesn't watch anything.** AFKLocker has no idea what you're running, when it finishes, or
   whether you came back. It configures the machine and locks the session. That's the whole product.
 
+Specific to automatic mode:
+
+- **Automatic lock needs a machine that reports lid events.** Windows only delivers them "until a
+  lid device is found and its current state is known" - so on a desktop, or hardware that does not
+  report a lid, nothing will ever fire. AFKLocker cannot detect that up front: registration
+  succeeds either way. If you switch it on and closing the lid does nothing, that is what
+  happened.
+- **The watcher lives in your session.** It starts at sign-in and ends at sign-out. It does not
+  run at the lock screen before you have signed in, and it does not cover other users - each
+  signed-in user gets their own, or none.
+- **Automatic mode does not make an unsupported machine work.** If Modern Standby or an OEM
+  utility puts the machine to sleep when the lid closes, AFKLocker will lock it first and Windows
+  will sleep it anyway.
+
 ## Privacy
 
 AFKLocker makes **no network requests of any kind**. No telemetry, no analytics, no update check,
-no accounts, no cloud anything. It reads and writes Windows power settings, writes backup files
-under `%LOCALAPPDATA%\AFKLocker\`, and calls `LockWorkStation`.
+no accounts, no cloud anything. That is unchanged by automatic mode: the watcher opens no sockets
+either.
 
-You do not have to take that on faith - it's four source files of logic and you can read them, or
-watch the process with any network monitor.
+Everything it touches is local: Windows power settings, backup and settings files under
+`%LOCALAPPDATA%\AFKLocker\`, one registry value under `HKCU\...\CurrentVersion\Run` when automatic
+mode is on, and `LockWorkStation`.
+
+You do not have to take that on faith. The logic is a handful of readable source files, and the
+repository's own integration test checks the running watcher for open TCP/UDP handles and power
+requests rather than just asserting there are none.
 
 ## Building from source
 
@@ -230,6 +333,14 @@ Output lands in `build/`. Useful switches:
 ```powershell
 pwsh -File tools/Build.ps1 -Test -Installer   # also build the installer (needs Inno Setup 6)
 pwsh -File tools/Build-Icon.ps1               # regenerate the icon assets from their vector source
+```
+
+Two integration scripts are kept out of CI because they touch the real machine, and are worth
+running by hand after changing anything they cover:
+
+```powershell
+pwsh -File tools/Test-Integration.ps1           # applies and restores power settings, on a throwaway power plan
+pwsh -File tools/Test-AutoLock-Integration.ps1  # turns automatic lock on and off for real, then puts it back
 ```
 
 The build treats compiler warnings as errors, and `tools/Build-Icon.ps1` regenerates every icon
