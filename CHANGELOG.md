@@ -3,6 +3,42 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-09-07
+
+### Fixed
+
+- **Locking now turns the screens off, in both modes.** Manual mode never touched the display at
+  all: it locked and exited, and the screens stayed lit until Windows' *console lock display off
+  timeout* fired. That timeout is sixty seconds by default, is hidden from `powercfg /q`, and on
+  some machines does not fire at all - so "lock and walk away" could leave the lock screen
+  glowing indefinitely, which with an external monitor is exactly where anyone can see it. The
+  request AFKLocker makes puts the panel into standby rather than painting it black.
+
+- **The display stays off when the lid closes afterwards.** Closing the lid makes Windows
+  reconfigure the displays, and that reconfiguration wakes the external monitor back up - after
+  the lock, so a single display-off request has already been made and lost. AFKLocker now holds
+  the screens dark for up to 45 seconds instead of asking once.
+
+  It stops immediately on any of: the session being unlocked, a key or mouse movement, the lid
+  being opened, five requests made (something else on the machine wants the display on and gets
+  to win), or the time limit. Blanking too little is a nuisance; blanking the screen of someone
+  typing their password is a malfunction, so every ambiguous case fails towards leaving the
+  display on.
+
+- **A stuck AFKLocker no longer disables display-off silently.** The first version of the holder
+  tore its own notification window down from inside that window's message handler. When that
+  failed the "finished" event never fired, the process never exited, and - because it held a
+  single-instance mutex - every later lock skipped blanking without a word. The teardown is now
+  deferred to the next turn of the message loop, "finished" is raised before any cleanup so that
+  nothing depends on cleanup succeeding, the mutex is gone, and a watchdog ends the process
+  regardless.
+
+### Changed
+
+- `AFKLocker.exe` now lives for up to 45 seconds after locking rather than exiting immediately.
+  It still holds no execution state, starts no service, and never keeps the machine awake; the
+  lock itself is complete before any of this begins, and nothing here can undo it.
+
 ## [0.4.0] - 2026-09-07
 
 ### Added
@@ -185,6 +221,7 @@ Initial release.
   machines.
 - Binaries are not code-signed, so SmartScreen will warn on first run.
 
+[0.4.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.4.1
 [0.4.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.4.0
 [0.3.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.3.0
 [0.2.2]: https://github.com/augbastos/AFKLocker/releases/tag/v0.2.2

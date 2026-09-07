@@ -21,12 +21,12 @@ lock the session before you leave.
 
 ## Two ways to lock
 
-**Manual** — the default. Nothing of AFKLocker stays running.
+**Manual** — the default. Nothing of AFKLocker stays running once the screens are dark.
 
 ```
 Double-click AFKLocker
         ↓
-Windows locks
+Windows locks, screens go dark
         ↓
 Close the lid
         ↓
@@ -86,19 +86,39 @@ The part that makes closed-lid work possible is not the lock. It's the power con
 
 1. **Lid close action = Do nothing**, so shutting the laptop doesn't suspend it.
 2. **System sleep timeout = Never**, so idling doesn't suspend it either.
-3. **Nothing stays resident.** AFKLocker exits immediately after locking. The machine keeps
-   running because Windows is configured to, not because something is holding it awake.
+3. **Nothing stays resident.** The machine keeps running because Windows is configured to, not
+   because something is holding it awake. AFKLocker holds no execution state and starts no
+   service; the only thing that outlives the lock is described below, and it is measured in
+   seconds.
 
-The screen going dark is handled by the hardware: closing the lid physically turns the panel and
-keyboard backlight off. **Manual mode does not try to blank the display in software**, because
-doing it *before* the lock loses - the Windows lock screen turns the monitor straight back on.
-Closing the lid is the reliable way to get a dark screen.
+### Turning the screens off
 
-The exception is an external monitor, which no lid can turn off. There, closing the lid makes
-Windows reconfigure the displays and wake the external screen, leaving a lit lock screen behind on
-a desk you have walked away from. So in **automatic mode**, where AFKLocker is the thing doing the
-locking and knows exactly when it happened, it asks for display-off immediately afterwards -
-which works, because by then the lock screen already exists.
+Locking does not darken a screen. Windows will eventually do it on its own, after the *console
+lock display off timeout* - but that setting is hidden, it is sixty seconds by default, and on
+some machines it does not fire at all. Sixty seconds of lit lock screen on a desk you have
+already walked away from is not what a lock is for.
+
+So AFKLocker asks for display-off itself, right after locking. That request puts the panel into
+standby rather than painting it black, which is the difference between a monitor that is off and
+one that is merely dark.
+
+One request is not enough when an external monitor is attached. Closing the lid makes Windows
+reconfigure the displays, and that reconfiguration lights the external panel back up - *after*
+the lock, so the request has already been made and lost. AFKLocker therefore keeps asking for up
+to 45 seconds, which is long enough to cover locking and then closing the lid.
+
+Knowing when to stop is the harder half, because a program that insists would blank the screen of
+someone standing at the machine typing their password. Any one of these ends it for good:
+
+- the session is unlocked;
+- a key is pressed or the mouse moves;
+- the lid is opened;
+- five requests have been made, meaning something else on this machine wants the display on and
+  gets to win;
+- 45 seconds pass.
+
+Then the process exits. It never suspends the machine, holds no execution state, and failing to
+darken a screen never affects the lock, which has already happened by then.
 
 ## Quick start
 
@@ -207,9 +227,9 @@ Turn it off and the watcher stops, the sign-in entry is removed, and nothing of 
 resident again. Uninstalling does the same, without asking.
 
 **With an external monitor**, closing the lid makes Windows move everything to the external
-screen. In automatic mode AFKLocker turns the displays off after locking, so you are not left with
-a lit lock screen on a desk you have walked away from. In manual mode the screens follow Windows'
-own "console lock display off timeout", which you can shorten in Advanced power settings.
+screen. Both modes then hold the displays off the same way, described in
+[Turning the screens off](#turning-the-screens-off), so you are not left with a lit lock screen on
+a desk you have walked away from.
 
 **Two details worth knowing:**
 
@@ -235,8 +255,10 @@ Only these, only on the active power plan, and only after you confirm:
 | System sleep timeout (DC) | `29f6c1db-…` | Never | Only if you tick "also on battery" |
 | Hibernate timeout (DC) | `9d7815a6-…` | Never | Only if you tick "also on battery" |
 
-**The display timeout is never touched.** AFKLocker keeps the *system* awake, not the *screen*.
-Your monitor can and should still turn off on its own.
+**No display timeout is ever written.** AFKLocker keeps the *system* awake, not the *screen*, and
+it does not change how long Windows waits before darkening a monitor. Asking a display to turn
+off right now, which it does after locking, is a request - not a saved setting, and nothing to
+restore afterwards.
 
 **The automatic-lock watcher changes none of these.** It only locks. Whether the machine keeps
 running with the lid shut is decided entirely by the table above, in both modes.

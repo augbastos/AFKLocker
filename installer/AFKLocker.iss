@@ -9,7 +9,7 @@
 ; Expects the compiled binaries in build\ (run tools\Build.ps1 first).
 
 #define AppName        "AFKLocker"
-#define AppVersion     "0.4.0"
+#define AppVersion     "0.4.1"
 #define AppPublisher   "Augusto Bastos"
 #define AppUrl         "https://github.com/augbastos/AFKLocker"
 #define AppExe         "AFKLocker.exe"

@@ -1,0 +1,635 @@
+using System;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+using Microsoft.Win32;
+
+namespace AFKLocker.Core
+{
+    /// <summary>
+    /// Console display state, as reported by GUID_CONSOLE_DISPLAY_STATE.
+    /// </summary>
+    public enum DisplayState
+    {
+        Off = 0,
+        On = 1,
+        Dimmed = 2
+    }
+
+    /// <summary>What to do about the display state that was just observed.</summary>
+    public enum BlankAction
+    {
+        /// <summary>Leave it alone.</summary>
+        Nothing,
+
+        /// <summary>Ask Windows to turn the display off.</summary>
+        TurnOff,
+
+        /// <summary>Stop watching entirely; do not touch the display again.</summary>
+        Stop
+    }
+
+    /// <summary>
+    /// The last keyboard or mouse input Windows attributes to this session.
+    ///
+    /// Behind an interface because the whole point of reading it is to stop
+    /// blanking the moment a person is back at the machine, and a test cannot
+    /// produce real input.
+    /// </summary>
+    public interface IUserInputMonitor
+    {
+        uint LastInputTick { get; }
+    }
+
+    /// <inheritdoc cref="IUserInputMonitor"/>
+    public sealed class WindowsUserInputMonitor : IUserInputMonitor
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct LASTINPUTINFO
+        {
+            public uint cbSize;
+            public uint dwTime;
+        }
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+
+        public uint LastInputTick
+        {
+            get
+            {
+                var info = new LASTINPUTINFO();
+                info.cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO));
+                return GetLastInputInfo(ref info) ? info.dwTime : 0;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Decides whether AFKLocker should ask for display-off again.
+    ///
+    /// This exists because one request is not enough on a machine with an
+    /// external monitor. Closing the lid makes Windows reconfigure the displays,
+    /// and that reconfiguration lights the external panel back up - after the
+    /// session is already locked, so the lock screen ends up glowing on a desk
+    /// nobody is sitting at.
+    ///
+    /// The hard part is not turning the display off. It is knowing when to STOP,
+    /// because a blanker that keeps insisting would blank the screen of somebody
+    /// who came back and is typing their password. Hence four independent ways
+    /// to give up, any one of which ends it for good:
+    ///
+    ///   - the session is no longer locked: the person is back and in;
+    ///   - keyboard or mouse input happened: the person is back at the machine;
+    ///   - the lid was opened: on a laptop that is the same signal;
+    ///   - a cap on how many times it will insist, so that if something on this
+    ///     machine really wants the display on, it wins rather than fighting
+    ///     forever.
+    ///
+    /// The caller adds a time limit on top. Failing open - leaving the display
+    /// on - is always the safe direction: a lit screen on a locked machine is a
+    /// nuisance, a blanked screen under someone's hands is a malfunction.
+    /// </summary>
+    public sealed class DisplayBlankPolicy
+    {
+        /// <summary>
+        /// How many times it will ask before concluding that something else owns
+        /// the display. One for the lock itself, one for the lid reconfiguration,
+        /// and a little room for a monitor that takes two rounds to settle.
+        /// </summary>
+        public const int DefaultMaxRequests = 5;
+
+        private readonly uint _inputAtStart;
+        private readonly int _maxRequests;
+
+        private int _requests;
+        private bool _stopped;
+
+        public DisplayBlankPolicy(uint inputAtStart)
+            : this(inputAtStart, DefaultMaxRequests)
+        {
+        }
+
+        public DisplayBlankPolicy(uint inputAtStart, int maxRequests)
+        {
+            _inputAtStart = inputAtStart;
+            _maxRequests = maxRequests < 1 ? 1 : maxRequests;
+        }
+
+        /// <summary>True once it has given up, for whatever reason.</summary>
+        public bool Stopped
+        {
+            get { return _stopped; }
+        }
+
+        /// <summary>How many display-off requests it has authorised so far.</summary>
+        public int Requests
+        {
+            get { return _requests; }
+        }
+
+        /// <summary>Why it stopped, in words a log can carry. Null while running.</summary>
+        public string StopReason { get; private set; }
+
+        /// <summary>The first request, made right after the session was locked.</summary>
+        public BlankAction Begin()
+        {
+            if (_stopped) return BlankAction.Nothing;
+            _requests++;
+            return BlankAction.TurnOff;
+        }
+
+        /// <summary>
+        /// Something changed the display state. Decide what that means.
+        /// </summary>
+        public BlankAction HandleDisplayState(DisplayState state, bool sessionLocked, uint lastInputTick)
+        {
+            if (_stopped) return BlankAction.Nothing;
+
+            if (!sessionLocked)
+                return StopBecause("the session was unlocked");
+
+            if (lastInputTick != _inputAtStart)
+                return StopBecause("the keyboard or mouse was used");
+
+            // Off or dimmed is the goal, not a problem to solve.
+            if (state != DisplayState.On)
+                return BlankAction.Nothing;
+
+            if (_requests >= _maxRequests)
+                return StopBecause("something else keeps the display on");
+
+            _requests++;
+            return BlankAction.TurnOff;
+        }
+
+        /// <summary>
+        /// The lid moved. Opening it means a person is here; closing it is the
+        /// event this whole class exists to survive, so it changes nothing.
+        /// </summary>
+        public BlankAction HandleLid(LidState state)
+        {
+            if (_stopped) return BlankAction.Nothing;
+            if (state == LidState.Opened)
+                return StopBecause("the lid was opened");
+            return BlankAction.Nothing;
+        }
+
+        /// <summary>The session was unlocked while nothing else was happening.</summary>
+        public BlankAction HandleUnlocked()
+        {
+            if (_stopped) return BlankAction.Nothing;
+            return StopBecause("the session was unlocked");
+        }
+
+        /// <summary>The caller's time limit ran out. Windows owns the display from here.</summary>
+        public BlankAction HandleTimeLimit()
+        {
+            if (_stopped) return BlankAction.Nothing;
+            return StopBecause("the time limit was reached");
+        }
+
+        private BlankAction StopBecause(string reason)
+        {
+            _stopped = true;
+            StopReason = reason;
+            return BlankAction.Stop;
+        }
+    }
+
+    /// <summary>
+    /// Keeps the displays dark for a short while after AFKLocker locks the
+    /// session, then gets out of the way.
+    ///
+    /// It owns a hidden top-level window - not a message-only one, for the same
+    /// reason as <see cref="LidNotificationWindow"/> - registered for console
+    /// display state and lid changes. It does not poll, holds no execution
+    /// state, and never keeps the machine awake: it only reacts to what Windows
+    /// reports, and every path leads to it stopping on its own.
+    ///
+    /// It does not run a message loop. The manual lock pumps one for it and
+    /// exits when <see cref="Finished"/> fires; the watcher already has one.
+    /// </summary>
+    public sealed class DisplayBlanker : IDisposable
+    {
+        /// <summary>
+        /// Long enough to cover locking and then closing the lid, short enough
+        /// that somebody who walks back to the machine is never fighting it.
+        /// </summary>
+        public static readonly TimeSpan DefaultTimeLimit = TimeSpan.FromSeconds(45);
+
+        /// <summary>
+        /// Windows reconfigures the displays over several messages when the lid
+        /// closes. Asking during that settles nothing, so each request waits for
+        /// the noise to stop.
+        /// </summary>
+        private static readonly TimeSpan SettleDelay = TimeSpan.FromMilliseconds(1200);
+
+        private static readonly Guid GuidConsoleDisplayState =
+            new Guid("6FE69556-704A-47A0-8F24-C28D936FDA47");
+        private static readonly Guid GuidLidSwitchStateChange =
+            new Guid("BA3E0F4D-B817-4094-A2D1-D56379E6A0F3");
+
+        private const int WM_POWERBROADCAST = 0x0218;
+        private const int PBT_POWERSETTINGCHANGE = 0x8013;
+        private const int DEVICE_NOTIFY_WINDOW_HANDLE = 0x00000000;
+        private const int WS_EX_TOOLWINDOW = 0x00000080;
+        private const int DataLengthOffset = 16;
+        private const int DataOffset = 20;
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr RegisterPowerSettingNotification(IntPtr recipient,
+            ref Guid powerSettingGuid, int flags);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnregisterPowerSettingNotification(IntPtr handle);
+
+        private readonly IDisplayController _displays;
+        private readonly IUserInputMonitor _input;
+        private readonly TimeSpan _timeLimit;
+
+        /// <summary>
+        /// How long to wait before checking that a request actually landed.
+        ///
+        /// This is not how the class works - it reacts to notifications - but a
+        /// request that Windows quietly ignores produces no notification at all,
+        /// and silence would otherwise look like success. Bounded by the same
+        /// request cap and time limit as everything else.
+        /// </summary>
+        private static readonly TimeSpan VerifyInterval = TimeSpan.FromMilliseconds(2500);
+
+        private DisplayBlankPolicy _policy;
+        private NotificationWindow _window;
+        private Timer _settle;
+        private Timer _verify;
+        private Timer _limit;
+        private SessionSwitchEventHandler _sessionHandler;
+        private bool _sessionLocked = true;
+        private bool _running;
+        private bool _disposed;
+
+        // Locking implies the display is on; anything else arrives by event.
+        private DisplayState _lastState = DisplayState.On;
+
+        public DisplayBlanker(IDisplayController displays, IUserInputMonitor input)
+            : this(displays, input, DefaultTimeLimit)
+        {
+        }
+
+        public DisplayBlanker(IDisplayController displays, IUserInputMonitor input, TimeSpan timeLimit)
+        {
+            if (displays == null) throw new ArgumentNullException("displays");
+            if (input == null) throw new ArgumentNullException("input");
+
+            _displays = displays;
+            _input = input;
+            _timeLimit = timeLimit;
+        }
+
+        /// <summary>Raised once, when it has stopped for good.</summary>
+        public event EventHandler Finished;
+
+        /// <summary>Why it stopped. Null until it has.</summary>
+        public string StopReason
+        {
+            get { return _policy == null ? null : _policy.StopReason; }
+        }
+
+        /// <summary>
+        /// Starts watching and makes the first display-off request. Returns false
+        /// if Windows would not register the notification, in which case the
+        /// single request has still been made and nothing is left running.
+        /// </summary>
+        public bool Start()
+        {
+            if (_running) return true;
+
+            _policy = new DisplayBlankPolicy(SafeLastInput());
+            _running = true;
+
+            _window = new NotificationWindow(this);
+            bool registered = _window.Start();
+
+            _sessionHandler = delegate(object sender, SessionSwitchEventArgs e)
+            {
+                if (e.Reason == SessionSwitchReason.SessionUnlock ||
+                    e.Reason == SessionSwitchReason.SessionLogoff)
+                {
+                    _sessionLocked = false;
+                    Apply(_policy.HandleUnlocked());
+                }
+                else if (e.Reason == SessionSwitchReason.SessionLock)
+                {
+                    _sessionLocked = true;
+                }
+            };
+            SystemEvents.SessionSwitch += _sessionHandler;
+
+            _limit = new Timer();
+            _limit.Interval = (int)Math.Max(1000, _timeLimit.TotalMilliseconds);
+            _limit.Tick += delegate { Apply(_policy.HandleTimeLimit()); };
+            _limit.Start();
+
+            _settle = new Timer();
+            _settle.Interval = (int)SettleDelay.TotalMilliseconds;
+            _settle.Tick += delegate
+            {
+                _settle.Stop();
+                RequestOff();
+            };
+
+            _verify = new Timer();
+            _verify.Interval = (int)VerifyInterval.TotalMilliseconds;
+            _verify.Tick += delegate
+            {
+                // Still lit and nothing told us otherwise: the last request did
+                // not land. Run it through the same decision, so the cap and the
+                // stop conditions apply exactly as they do to a real event.
+                if (_lastState != DisplayState.Off)
+                    Decide(DisplayState.On);
+            };
+            _verify.Start();
+
+            Apply(_policy.Begin());
+
+            if (!registered)
+            {
+                // Without notifications there is nothing to react to, so there is
+                // no reason to keep a window and two timers alive for 45 seconds.
+                Apply(BlankAction.Stop);
+            }
+
+            return registered;
+        }
+
+        private uint SafeLastInput()
+        {
+            try
+            {
+                return _input.LastInputTick;
+            }
+            catch (Exception)
+            {
+                return 0;
+            }
+        }
+
+        private void OnDisplayState(DisplayState state)
+        {
+            if (!_running) return;
+            _lastState = state;
+            Decide(state);
+        }
+
+        private void Decide(DisplayState state)
+        {
+            if (!_running) return;
+
+            BlankAction action = _policy.HandleDisplayState(state, _sessionLocked, SafeLastInput());
+
+            if (action == BlankAction.TurnOff)
+            {
+                // Deliberately not immediate: the display coming back on is the
+                // middle of a reconfiguration, not the end of one.
+                _settle.Stop();
+                _settle.Start();
+                return;
+            }
+
+            Apply(action);
+        }
+
+        private void OnLid(LidState state)
+        {
+            if (!_running) return;
+            Apply(_policy.HandleLid(state));
+        }
+
+        private void Apply(BlankAction action)
+        {
+            if (action == BlankAction.TurnOff)
+            {
+                RequestOff();
+            }
+            else if (action == BlankAction.Stop)
+            {
+                Stop();
+            }
+        }
+
+        private void RequestOff()
+        {
+            try
+            {
+                _displays.TurnOff();
+            }
+            catch (Exception)
+            {
+                // Cosmetic by definition. A machine that locked but kept its
+                // screens lit is still locked, and that is the guarantee.
+            }
+        }
+
+        /// <summary>
+        /// Stops watching. Safe to call more than once, and safe to call from
+        /// inside the notification handler - which is where it is normally
+        /// called from, since the reasons to stop arrive as messages.
+        ///
+        /// The order below is not cosmetic. <see cref="Finished"/> is raised
+        /// before the window is torn down, and the teardown itself is pushed to
+        /// the next turn of the message loop, because destroying a window while
+        /// its own WndProc is on the stack is how the first version of this
+        /// class hung: the teardown failed, the event never fired, and the
+        /// process that was waiting for it stayed alive forever holding the
+        /// display feature hostage. Nothing here may depend on the teardown
+        /// succeeding.
+        /// </summary>
+        public void Stop()
+        {
+            if (!_running) return;
+            _running = false;
+
+            DisposeTimer(ref _settle);
+            DisposeTimer(ref _verify);
+            DisposeTimer(ref _limit);
+
+            if (_sessionHandler != null)
+            {
+                SystemEvents.SessionSwitch -= _sessionHandler;
+                _sessionHandler = null;
+            }
+
+            EventHandler handler = Finished;
+            if (handler != null) handler(this, EventArgs.Empty);
+
+            ScheduleTeardown();
+        }
+
+        private static void DisposeTimer(ref Timer timer)
+        {
+            if (timer == null) return;
+            try
+            {
+                timer.Stop();
+                timer.Dispose();
+            }
+            catch (Exception)
+            {
+                // Never let cleanup be the thing that breaks the caller.
+            }
+            timer = null;
+        }
+
+        /// <summary>
+        /// Takes the window down on the next turn of the message loop, so it is
+        /// never destroyed from inside its own message handler.
+        /// </summary>
+        private void ScheduleTeardown()
+        {
+            if (_window == null) return;
+
+            var teardown = new Timer();
+            teardown.Interval = 1;
+            teardown.Tick += delegate
+            {
+                teardown.Stop();
+                teardown.Dispose();
+                TearDownWindow();
+            };
+            teardown.Start();
+        }
+
+        private void TearDownWindow()
+        {
+            NotificationWindow window = _window;
+            _window = null;
+            if (window == null) return;
+
+            try
+            {
+                window.Stop();
+            }
+            catch (Exception)
+            {
+                // The process is either exiting or the window is already gone.
+                // Either way this is not worth failing over.
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+
+            Stop();
+
+            // A caller disposing us is not inside our WndProc, so the window can
+            // go now rather than waiting for a loop turn that may never come.
+            TearDownWindow();
+        }
+
+        /// <summary>
+        /// The hidden window that receives the power notifications. Kept private
+        /// because nothing outside needs to know this class owns a window.
+        /// </summary>
+        private sealed class NotificationWindow : NativeWindow
+        {
+            private readonly DisplayBlanker _owner;
+            private IntPtr _displayRegistration = IntPtr.Zero;
+            private IntPtr _lidRegistration = IntPtr.Zero;
+
+            public NotificationWindow(DisplayBlanker owner)
+            {
+                _owner = owner;
+            }
+
+            public bool Start()
+            {
+                if (Handle == IntPtr.Zero)
+                {
+                    var parameters = new CreateParams
+                    {
+                        Caption = "AFKLocker Display",
+                        X = 0,
+                        Y = 0,
+                        Height = 0,
+                        Width = 0,
+                        Style = 0,
+                        ExStyle = WS_EX_TOOLWINDOW
+                    };
+                    CreateHandle(parameters);
+                }
+
+                Guid display = GuidConsoleDisplayState;
+                _displayRegistration = RegisterPowerSettingNotification(Handle, ref display,
+                    DEVICE_NOTIFY_WINDOW_HANDLE);
+
+                Guid lid = GuidLidSwitchStateChange;
+                _lidRegistration = RegisterPowerSettingNotification(Handle, ref lid,
+                    DEVICE_NOTIFY_WINDOW_HANDLE);
+
+                // The lid is a bonus signal; the display state is the one that
+                // makes this class work at all.
+                return _displayRegistration != IntPtr.Zero;
+            }
+
+            public void Stop()
+            {
+                if (_displayRegistration != IntPtr.Zero)
+                {
+                    UnregisterPowerSettingNotification(_displayRegistration);
+                    _displayRegistration = IntPtr.Zero;
+                }
+
+                if (_lidRegistration != IntPtr.Zero)
+                {
+                    UnregisterPowerSettingNotification(_lidRegistration);
+                    _lidRegistration = IntPtr.Zero;
+                }
+
+                if (Handle != IntPtr.Zero)
+                    DestroyHandle();
+            }
+
+            protected override void WndProc(ref Message m)
+            {
+                if (m.Msg == WM_POWERBROADCAST)
+                {
+                    if (m.WParam.ToInt32() == PBT_POWERSETTINGCHANGE)
+                        Dispatch(m.LParam);
+
+                    m.Result = (IntPtr)1;
+                    return;
+                }
+
+                base.WndProc(ref m);
+            }
+
+            private void Dispatch(IntPtr lParam)
+            {
+                if (lParam == IntPtr.Zero) return;
+
+                var setting = (Guid)Marshal.PtrToStructure(lParam, typeof(Guid));
+
+                int dataLength = Marshal.ReadInt32(lParam, DataLengthOffset);
+                if (dataLength < sizeof(int)) return;
+
+                int value = Marshal.ReadInt32(lParam, DataOffset);
+
+                if (setting == GuidConsoleDisplayState)
+                {
+                    if (value == (int)DisplayState.Off ||
+                        value == (int)DisplayState.On ||
+                        value == (int)DisplayState.Dimmed)
+                        _owner.OnDisplayState((DisplayState)value);
+                }
+                else if (setting == GuidLidSwitchStateChange)
+                {
+                    if (value == (int)LidState.Closed || value == (int)LidState.Opened)
+                        _owner.OnLid((LidState)value);
+                }
+            }
+        }
+    }
+}
