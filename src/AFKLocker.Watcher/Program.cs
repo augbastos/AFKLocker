@@ -111,6 +111,9 @@ namespace AFKLocker.Watcher
                         return ExitLidNotificationFailed;
 
                     var displays = new WindowsDisplayController();
+                    var inputMonitor = new WindowsUserInputMonitor();
+                    DisplayBlanker blanker = null;
+
                     lidWindow.LidStateChanged += delegate(object s, LidStateEventArgs e)
                     {
                         if (policy.Handle(e.State) != AutoLockDecision.Locked) return;
@@ -118,22 +121,18 @@ namespace AFKLocker.Watcher
                         // Turning the panel dark is the lid's job on a single
                         // screen. With an external monitor attached it is not:
                         // closing the lid makes Windows reconfigure the
-                        // displays, which wakes the external one and leaves the
-                        // lock screen lit on a desk the user has walked away
-                        // from. Asking for display-off after the lock covers
-                        // both screens.
+                        // displays, and that reconfiguration wakes the external
+                        // one back up - after the lock - leaving the lock screen
+                        // lit on a desk the user has walked away from.
                         //
-                        // Deliberately only on a lock we just performed - never
-                        // on lid-open, and never on its own.
-                        try
-                        {
-                            displays.TurnOff();
-                        }
-                        catch (Exception)
-                        {
-                            // Cosmetic. A machine that locked but kept its
-                            // screens on is still locked.
-                        }
+                        // One request loses that race, so this holds the screens
+                        // dark for a short while instead. It stops on its own,
+                        // and stops immediately if anyone comes back.
+                        if (blanker != null) blanker.Dispose();
+
+                        blanker = new DisplayBlanker(displays, inputMonitor);
+                        blanker.Finished += delegate { blanker = null; };
+                        blanker.Start();
                     };
 
                     // After resume the lid may have moved while the machine was
