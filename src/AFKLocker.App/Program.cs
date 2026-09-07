@@ -12,13 +12,20 @@ namespace AFKLocker.App
     /// double-clicking it never flashes a console window. What keeps the machine
     /// running with the lid closed is the power configuration, not a process.
     ///
-    /// It does linger, briefly, and only for the screens. Locking alone does not
-    /// darken them: on a machine with an external monitor, closing the lid makes
-    /// Windows reconfigure the displays and light the external panel back up,
-    /// leaving the lock screen glowing at an empty desk. So after locking, this
-    /// spends up to <see cref="DisplayBlanker.DefaultTimeLimit"/> making sure the
-    /// screens go dark and stay dark, then exits by itself. It stops the instant
-    /// anyone touches the keyboard, opens the lid, or unlocks.
+    /// It does linger, and only for the screens. Locking alone does not darken
+    /// them, and Windows will not always darken them either: on this project's
+    /// test machine the console lock display timeout never fires at all, and a
+    /// display-off request made straight after the click that locked the machine
+    /// is ignored because that click counts as recent user input.
+    ///
+    /// So after locking, this stays alive to keep asking until the screens are
+    /// actually dark, and to put them out again if anything wakes them. It ends
+    /// when the session is unlocked - which is the moment a lit screen becomes
+    /// correct - and the process exits with it.
+    ///
+    /// That is still not resident in the sense the project promises: nothing
+    /// exists while you are working, only while the machine is locked, and it
+    /// holds no execution state and keeps nothing awake.
     /// </summary>
     internal static class Program
     {
@@ -29,7 +36,7 @@ namespace AFKLocker.App
         /// one. An earlier version had no net, hung, and every later lock
         /// silently stopped darkening the screen.
         /// </summary>
-        private static readonly TimeSpan WatchdogGrace = TimeSpan.FromSeconds(20);
+        private static readonly TimeSpan WatchdogGrace = TimeSpan.FromMinutes(5);
 
         [STAThread]
         private static int Main(string[] args)
@@ -82,9 +89,15 @@ namespace AFKLocker.App
 
         private static int LockSession()
         {
+            StartWatchdog();
+
+            DisplayBlanker blanker;
             try
             {
-                new WindowsSessionLocker().Lock();
+                // The same call the global hotkey makes, so the two can never
+                // drift into doing different things.
+                blanker = LockAction.LockAndDarken(new WindowsSessionLocker(),
+                    new WindowsDisplayController(), new WindowsUserInputMonitor());
             }
             catch (Exception ex)
             {
@@ -96,7 +109,7 @@ namespace AFKLocker.App
 
             // The lock is the guarantee and it is already done. Everything below
             // is about the screens, and nothing below can undo it.
-            KeepScreensDark();
+            KeepScreensDark(blanker);
             return 0;
         }
 
@@ -107,19 +120,18 @@ namespace AFKLocker.App
         /// Deliberately after the lock, never before: a dark screen on a session
         /// that failed to lock would look locked without being locked.
         /// </summary>
-        private static void KeepScreensDark()
+        private static void KeepScreensDark(DisplayBlanker blanker)
         {
             // Deliberately no "only one instance" lock here. The obvious design
             // is a mutex so two locks in a row cannot both blank, and it is a
             // trap: when the holder gets stuck, every later lock skips blanking
             // and says nothing. Two blankers briefly asking for the same thing
             // is harmless; a silent opt-out is not.
-            StartWatchdog();
+            if (blanker == null) return;
 
             try
             {
-                using (var blanker = new DisplayBlanker(
-                    new WindowsDisplayController(), new WindowsUserInputMonitor()))
+                using (blanker)
                 {
                     bool finished = false;
                     blanker.Finished += delegate
@@ -128,12 +140,11 @@ namespace AFKLocker.App
                         Application.ExitThread();
                     };
 
-                    blanker.Start();
-
-                    // Start can finish synchronously - Windows refusing the
-                    // registration, say - and pumping after that would wait for
-                    // a message loop nothing is going to end.
-                    if (!finished) Application.Run();
+                    // The blanker is already started and can already have
+                    // finished - Windows refusing the registration, say - and
+                    // pumping after that would wait for a message loop nothing
+                    // is going to end.
+                    if (!blanker.HasFinished && !finished) Application.Run();
                 }
             }
             catch (Exception)

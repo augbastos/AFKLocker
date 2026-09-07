@@ -53,21 +53,87 @@ namespace AFKLocker.Tests
                 "off is the goal, not a problem");
             Assert.Equal(BlankAction.Nothing, policy.HandleDisplayState(DisplayState.Dimmed, true, Idle),
                 "dimmed is Windows on its way out, not something to fight");
-            Assert.Equal(1, policy.Requests, "neither should have cost a request");
             Assert.False(policy.Stopped, "and neither is a reason to stop");
         }
 
-        [Test("keyboard or mouse input stops it, because somebody is back")]
-        private static void UserInputStops()
+        [Test("reaching a dark screen clears the budget, so a long lock is not rationed")]
+        private static void ReachingOffResetsTheBudget()
+        {
+            var policy = new DisplayBlankPolicy(Idle, 2);
+
+            policy.Begin();                                                   // request 1
+            policy.HandleDisplayState(DisplayState.On, true, Idle);           // request 2
+            policy.HandleDisplayState(DisplayState.Off, true, Idle);          // it worked
+
+            // Something wakes the screen much later in the same locked session.
+            // The cap exists to catch a display that refuses to go off, not to
+            // ration a lock that lasts an hour.
+            Assert.Equal(BlankAction.TurnOff, policy.HandleDisplayState(DisplayState.On, true, Idle),
+                "a screen that went dark and lit up again is a fresh problem");
+            Assert.False(policy.Stopped, "and not a reason to give up");
+        }
+
+        [Test("signing in is the only thing that ends the guard")]
+        private static void OnlyUnlockingStops()
+        {
+            var policy = new DisplayBlankPolicy(Idle, 1);
+
+            policy.Begin();
+            policy.HandleDisplayState(DisplayState.On, true, Idle);           // back off
+            policy.HandleDisplayState(DisplayState.On, true, Idle + 9);       // defer
+            policy.HandleLid(LidState.Opened);                                // defer
+            policy.HandleLid(LidState.Closed);                                // nothing
+
+            Assert.False(policy.Stopped, "none of that is a reason to abandon the screen");
+
+            Assert.Equal(BlankAction.Stop, policy.HandleDisplayState(DisplayState.On, false, Idle + 9),
+                "an unlocked session is the one state where a lit screen is correct");
+        }
+
+        [Test("keyboard or mouse input defers, it does not end the guard")]
+        private static void UserInputDefers()
         {
             var policy = Fresh();
             policy.Begin();
 
-            BlankAction action = policy.HandleDisplayState(DisplayState.On, true, Idle + 1);
+            Assert.Equal(BlankAction.Defer, policy.HandleDisplayState(DisplayState.On, true, Idle + 1),
+                "somebody is at the machine, so wait");
+            Assert.False(policy.Stopped, "but waiting is not giving up");
+        }
 
-            Assert.Equal(BlankAction.Stop, action, "input means a person, and a person wins");
-            Assert.True(policy.Stopped, "and it stays stopped");
-            Assert.Equal("the keyboard or mouse was used", policy.StopReason, "the reason should say so");
+        [Test("somebody who wakes the screen and walks away without signing in is still covered")]
+        private static void InputThatStopsComingIsBlankedAgain()
+        {
+            var policy = Fresh();
+            policy.Begin();
+            policy.HandleDisplayState(DisplayState.Off, true, Idle);
+
+            // They move the mouse: the screen lights and the guard backs off.
+            Assert.Equal(BlankAction.Defer, policy.HandleDisplayState(DisplayState.On, true, Idle + 1),
+                "back off while they are touching it");
+
+            // Then they leave without signing in. Nothing new arrives, so the
+            // same input value comes back round - and this is the case that used
+            // to leave a lock screen lit for the rest of the night.
+            Assert.Equal(BlankAction.TurnOff, policy.HandleDisplayState(DisplayState.On, true, Idle + 1),
+                "they stopped touching it, so put the screen out");
+            Assert.False(policy.Stopped, "and keep watching afterwards");
+        }
+
+        [Test("repeated input keeps deferring, so typing a password is never interrupted")]
+        private static void ContinuedInputKeepsDeferring()
+        {
+            var policy = Fresh();
+            policy.Begin();
+
+            for (uint tick = 1; tick <= 6; tick++)
+            {
+                Assert.Equal(BlankAction.Defer,
+                    policy.HandleDisplayState(DisplayState.On, true, Idle + tick),
+                    "still typing at tick " + tick);
+            }
+
+            Assert.False(policy.Stopped, "and it never gave up on them");
         }
 
         [Test("an unlocked session stops it")]
@@ -91,15 +157,16 @@ namespace AFKLocker.Tests
             Assert.True(policy.Stopped, "and it stays stopped");
         }
 
-        [Test("opening the lid stops it")]
-        private static void LidOpenedStops()
+        [Test("opening the lid defers rather than ending the guard")]
+        private static void LidOpenedDefers()
         {
             var policy = Fresh();
             policy.Begin();
 
-            Assert.Equal(BlankAction.Stop, policy.HandleLid(LidState.Opened),
-                "on a laptop, opening the lid is a person arriving");
-            Assert.Equal("the lid was opened", policy.StopReason, "the reason should say so");
+            Assert.Equal(BlankAction.Defer, policy.HandleLid(LidState.Opened),
+                "somebody probably arrived, so wait for them");
+            Assert.False(policy.Stopped,
+                "but opening a lid and walking off without signing in must not leave it lit");
         }
 
         [Test("closing the lid changes nothing, because that is the case it exists for")]
@@ -112,8 +179,8 @@ namespace AFKLocker.Tests
             Assert.False(policy.Stopped, "and it must still be watching when the wake-up comes");
         }
 
-        [Test("it gives up rather than fight forever for the display")]
-        private static void RequestCapStops()
+        [Test("a display something else is holding on gets slow retries, never a surrender")]
+        private static void RequestCapBacksOffInsteadOfStopping()
         {
             var policy = new DisplayBlankPolicy(Idle, 3);
 
@@ -121,10 +188,31 @@ namespace AFKLocker.Tests
             Assert.Equal(BlankAction.TurnOff, policy.HandleDisplayState(DisplayState.On, true, Idle), "request 2");
             Assert.Equal(BlankAction.TurnOff, policy.HandleDisplayState(DisplayState.On, true, Idle), "request 3");
 
-            Assert.Equal(BlankAction.Stop, policy.HandleDisplayState(DisplayState.On, true, Idle),
-                "something else owns this display, and losing quietly beats looping");
-            Assert.Equal(3, policy.Requests, "the cap must be a real ceiling");
-            Assert.Equal("something else keeps the display on", policy.StopReason, "the reason should say so");
+            Assert.Equal(BlankAction.BackOff, policy.HandleDisplayState(DisplayState.On, true, Idle),
+                "stop asking quickly, but do not stop asking");
+            Assert.Equal(BlankAction.BackOff, policy.HandleDisplayState(DisplayState.On, true, Idle),
+                "and again, for as long as the session stays locked");
+            Assert.False(policy.Stopped,
+                "giving up would mean a lit lock screen all night because of the first ten seconds");
+            Assert.Equal(3, policy.Requests, "the cap still caps the fast attempts");
+        }
+
+        [Test("whatever was holding the display lets go, and the screen finally goes dark")]
+        private static void BackingOffRecoversWhenTheHoldEnds()
+        {
+            var policy = new DisplayBlankPolicy(Idle, 2);
+
+            policy.Begin();
+            policy.HandleDisplayState(DisplayState.On, true, Idle);
+            Assert.Equal(BlankAction.BackOff, policy.HandleDisplayState(DisplayState.On, true, Idle),
+                "something is holding it on");
+
+            // The media session ends, the remote tool disconnects, the driver
+            // settles - and the display finally reports itself off.
+            policy.HandleDisplayState(DisplayState.Off, true, Idle);
+
+            Assert.Equal(BlankAction.TurnOff, policy.HandleDisplayState(DisplayState.On, true, Idle),
+                "the next relight is treated as a fresh problem, at full speed");
         }
 
         [Test("the time limit stops it")]
@@ -142,7 +230,7 @@ namespace AFKLocker.Tests
         {
             var policy = Fresh();
             policy.Begin();
-            policy.HandleLid(LidState.Opened);
+            policy.HandleUnlocked();
 
             Assert.Equal(BlankAction.Nothing, policy.Begin(), "not even a fresh Begin");
             Assert.Equal(BlankAction.Nothing, policy.HandleDisplayState(DisplayState.On, true, Idle),
@@ -158,8 +246,8 @@ namespace AFKLocker.Tests
             var policy = new DisplayBlankPolicy(Idle, 0);
 
             Assert.Equal(BlankAction.TurnOff, policy.Begin(), "the first request must always survive");
-            Assert.Equal(BlankAction.Stop, policy.HandleDisplayState(DisplayState.On, true, Idle),
-                "and the second must not");
+            Assert.Equal(BlankAction.BackOff, policy.HandleDisplayState(DisplayState.On, true, Idle),
+                "and the second slows down rather than surrendering");
         }
     }
 }

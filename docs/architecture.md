@@ -34,26 +34,44 @@ That is the static analysis gate; there is no separate linter.
 |---|---|---|
 | `AFKLocker.exe` | `winexe` | Lock the session and exit. |
 | `AFKLockerSetup.exe` | `winexe` | Check readiness, configure, restore, choose lock mode. |
-| `AFKLockerWatcher.exe` | `winexe` | Optional. Lock when the lid closes. |
+| `AFKLockerWatcher.exe` | `winexe` | Optional background helper: lid lock, global hotkey. |
 | `AFKLocker.Core.dll` | library | All the logic worth testing. |
 
 All are `winexe` rather than `exe` so nothing ever flashes a console window. That single compiler
 flag is most of what "feels like a real utility" means in practice.
 
-**AFKLocker remains non-resident by default. Automatic lid lock is explicitly opt-in, and is the
-only feature that requires a user-session background process.**
+**AFKLocker remains non-resident by default. Both features that need a background process are
+explicitly opt-in and off by default.**
 
 The original design note said "no background service, no tray icon, no scheduled task", and that
-is still true of manual mode and still the reason it is the default: what keeps the machine awake
-with the lid closed is the Windows power configuration, which persists on its own. A process
-holding that open would add a failure mode, an attack surface and a thing to uninstall, in
+is still true with both features off, and still the reason that is the default: what keeps the
+machine awake with the lid closed is the Windows power configuration, which persists on its own. A
+process holding that open would add a failure mode, an attack surface and a thing to uninstall, in
 exchange for nothing.
 
-Automatic locking is different in kind. Nothing in the power configuration can express "lock when
-the lid closes" - that is not a power setting, it is a reaction to an event, and something has to
-be listening. So the watcher exists, and the cost is contained deliberately:
+### Residency follows the features, not the lock mode
 
-- it runs **only** when the user switches the mode on;
+`AFKLockerWatcher.exe` began as a lid watcher and is now a helper with two separate jobs. The file
+name has not changed, because renaming it would rewrite every existing user's sign-in entry to buy
+nothing.
+
+| Automatic | Global hotkey | Helper |
+|---|---|---|
+| off | off | none |
+| off | on | runs, for the hotkey only |
+| on | off | runs, for the lid only |
+| on | on | one process, both jobs |
+
+`LockMode.Manual` therefore no longer implies "no helper". The desired state is derived from
+`AutoLockSettings.RequiredFeatures`, and every part of the lifecycle - status, reconciliation,
+enable, disable - asks that rather than the mode. The two mistakes this prevents are both silent:
+killing a helper that the other feature still needs, and leaving one running when nothing does.
+
+Neither feature can be expressed as a power setting. "Lock when the lid closes" and "lock when
+this key is pressed" are reactions to events, and something has to be listening. So the helper
+exists, and the cost is contained deliberately:
+
+- it runs **only** when the user switches one of the two features on;
 - it is a **user-session process**, not a service - it must be in the interactive session to
   receive `GUID_LIDSWITCH_STATE_CHANGE` and to lock that session, and it needs no elevation to do
   either;
@@ -69,8 +87,34 @@ while starting. That took idle memory from about 23 MB to about 5 MB.
 
 ## Autostart: HKCU Run
 
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, one value, written when automatic mode is
-turned on and deleted when it is turned off or the program is uninstalled.
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, one value, written when a feature that needs
+the helper is turned on and deleted when the last one is turned off, or the program is
+uninstalled.
+
+### The entry is validated, not merely counted
+
+"A value exists" is not the question. An entry left behind by an uninstalled copy in a folder that
+no longer exists satisfies it, looks healthy in every status screen, and starts nothing. So the
+entry is parsed and compared instead, and reported as one of five states: absent, correct, wrong
+target, malformed, or unreadable.
+
+Comparing the strings would be wrong in both directions. The same command can be written many ways
+— quoted or not, different casing, an environment variable, a short 8.3 path, a trailing space —
+and none of those are a real difference. Meanwhile `D:\Old\AFKLockerWatcher.exe` differs from the
+installed helper only in the part a `Contains("AFKLockerWatcher.exe")` check throws away. So:
+
+- the command is split into an executable and arguments, handling the genuine ambiguity of an
+  unquoted path with spaces the way Windows does, by trying each prefix until one exists;
+- the executable is canonicalised: environment variables expanded, `GetFullPath` applied, 8.3
+  names expanded through `GetLongPathName`, trailing separators dropped;
+- the comparison is case-insensitive on the result, and arguments must match too, because
+  AFKLocker writes none.
+
+Canonicalising deliberately does **not** require the file to exist. An entry pointing at a deleted
+folder must still be recognisable as pointing elsewhere rather than collapsing into "unknown".
+
+`Reconcile()` rewrites a wrong entry rather than tolerating it, which is what turns this from a
+report into a repair.
 
 Considered and rejected:
 
@@ -110,8 +154,8 @@ own and switching users does not cross the wires:
 | Object | Meaning |
 |---|---|
 | `Local\AFKLocker.Watcher.Running` | A mutex held for the lifetime of the process |
-| `Local\AFKLocker.Watcher.Ready` | An event set once the watcher can actually receive lid events |
-| `Local\AFKLocker.Watcher.Stop` | An event set to ask the watcher to exit |
+| `Local\AFKLocker.Watcher.Ready` | An event set once every enabled feature is genuinely working |
+| `Local\AFKLocker.Watcher.Stop` | An event set to ask the helper to exit |
 
 **Running and Ready are separate because they answer different questions.** The process claims the
 mutex almost immediately, long before the runtime is up, the notification window exists, or
@@ -119,15 +163,63 @@ Windows has accepted the lid registration. Waiting on the mutex alone therefore 
 watcher that fails to register for lid events would hold it and look perfectly healthy while never
 locking anything.
 
-Ready is set only after every step needed to do the job has succeeded - single instance, session
-tracking started, window created, `RegisterPowerSettingNotification` accepted, handlers attached -
-and is reset the moment the process starts going away, so a dying watcher never leaves a ready
+Ready is set only after every step needed to do the job has succeeded, and **what that means
+depends on which features are switched on**:
+
+| Enabled | Ready means |
+|---|---|
+| Automatic only | `RegisterPowerSettingNotification` for the lid was accepted |
+| Hotkey only | `RegisterHotKey` succeeded for the chosen combination |
+| Both | both of the above, or the helper does not signal at all |
+
+It is reset the moment the process starts going away, so a dying helper never leaves a ready
 signal behind.
 
 `WatcherController.Start` waits for **Ready**, the process to die, or a timeout, whichever comes
-first. A watcher that cannot register exits with a distinct code and the caller learns
-immediately rather than waiting out the full timeout. That gives four states the UI can report
-honestly instead of one boolean: `NotRunning`, `Starting`, `Ready`, `Unhealthy`.
+first. A helper that cannot do what it was started for exits with a distinct code and the caller
+learns immediately rather than waiting out the full timeout:
+
+| Code | Meaning |
+|---|---|
+| 2 | Could not register for lid notifications |
+| 3 | Another helper already holds this session |
+| 4 | Windows would not reserve the hotkey - usually another application has it |
+| 5 | Nothing is switched on, so there was nothing to do |
+
+Code 5 matters more than it looks. A helper launched with no features enabled that sat there
+idling would make "helper running" stop meaning anything; exiting keeps the state honest.
+
+That gives four states the UI can report honestly instead of one boolean: `NotRunning`,
+`Starting`, `Ready`, `Unhealthy`. `Starting` is treated as a contradiction rather than a
+transient, because enabling waits for readiness before returning - so a helper found running but
+never ready is stuck, not mid-launch.
+
+## The global hotkey: RegisterHotKey, never a keyboard hook
+
+The feature is "lock when I press this key", and there are two ways to build it. A low-level
+keyboard hook (`WH_KEYBOARD_LL`) sees **every keystroke on the machine** and decides which one
+mattered. `RegisterHotKey` inverts it: Windows is told one combination, keeps the keyboard to
+itself, and posts a single `WM_HOTKEY` when exactly that is pressed.
+
+Only the second one lets AFKLocker keep saying it does not monitor what you type, so it is the
+only one considered. `MOD_NOREPEAT` is set, so holding the key locks once rather than repeating.
+
+What was measured on a real machine rather than assumed:
+
+- **`VK_APPS` (the Menu key) registers on its own**, with and without `MOD_NOREPEAT`. No hook is
+  needed to bind it, which was the open question.
+- **Windows reports its own reservations.** F12, `Win`+`L`, `Ctrl`+`Esc`, `Alt`+`Tab` and
+  `Ctrl`+`Alt`+`Del` all come back as `ERROR_HOTKEY_ALREADY_REGISTERED` (1409). There is therefore
+  no hand-written list of forbidden combinations: the API is asked, and its answer is shown.
+- **The one case Windows does not catch** is a bare modifier. `RegisterHotKey` accepts
+  `VK_CONTROL`, `VK_SHIFT`, `VK_MENU` and `VK_LWIN` as the key, and then nothing ever fires. That
+  looks configured and is not, so `HotkeyBinding` refuses it - the only behaviour-based rule in the
+  code, and it exists because the API says yes when it should say no.
+
+Setup asks Windows before saving, by registering the candidate and releasing it in the same
+breath, so a conflict is a sentence at configuration time rather than a helper that will not start
+later. The probe registers against the calling thread rather than a window, so there is nothing
+left to leak if the release fails.
 
 ## Enabling automatic mode is transactional
 

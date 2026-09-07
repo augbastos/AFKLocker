@@ -257,8 +257,8 @@ namespace AFKLocker.Tests
 
             Assert.False(result.Success, "still a failure");
             Assert.False(result.IsClean, "and it could not fully undo itself");
-            Assert.True(result.Residue.Any(r => r.Contains("saved mode")),
-                "the residue names the saved mode");
+            Assert.True(result.Residue.Any(r => r.Contains("saved settings")),
+                "the residue names the saved settings");
             Assert.False(autostart.IsRegistered, "the parts that could be undone still were");
         }
 
@@ -299,7 +299,7 @@ namespace AFKLocker.Tests
 
             Assert.False(result.Success, "reports failure");
             Assert.False(result.IsClean, "the process could not be stopped");
-            Assert.True(result.Residue.Any(r => r.Contains("watcher")), "residue names the watcher");
+            Assert.True(result.Residue.Any(r => r.Contains("helper")), "residue names the helper");
             // Everything that could be undone, was.
             Assert.Equal(LockMode.Manual, settings.Load().Mode, "mode restored");
             Assert.False(autostart.IsRegistered, "autostart restored");
@@ -322,7 +322,7 @@ namespace AFKLocker.Tests
             Assert.False(result.Success, "reports failure");
             Assert.False(result.IsClean,
                 "a watcher still running is residue, even though Stop only returned false");
-            Assert.True(result.Residue.Any(r => r.Contains("watcher")), "and it is named");
+            Assert.True(result.Residue.Any(r => r.Contains("helper")), "and it is named");
             // The parts that could be undone still were.
             Assert.Equal(LockMode.Manual, settings.Load().Mode, "mode restored");
             Assert.False(autostart.IsRegistered, "autostart restored");
@@ -552,28 +552,35 @@ namespace AFKLocker.Tests
             var settings = new FakeSettingsStore();
             settings.Save(new AutoLockSettings { Mode = LockMode.Automatic });
             var autostart = new FakeAutostartRegistry();
-            autostart.Preset("\"watcher\"");
+            autostart.Preset(AutostartCommand.For(ExistingWatcher));
             var watcher = new FakeWatcherProcess { State = WatcherState.NotRunning };
 
             AutoLockStatus status = Manager(settings, autostart, watcher).GetStatus();
 
             Assert.False(status.IsConsistent, "inconsistent");
-            Assert.True(status.Inconsistency.Contains("no watcher is running"), "and says why");
+            Assert.True(status.Inconsistency.Contains("not running"), "and says why");
         }
 
-        [Test("Status notices a watcher that is running but not ready")]
+        [Test("Status treats a helper that is running but not ready as a contradiction")]
         private static void StatusDistinguishesStartingFromReady()
         {
             var settings = new FakeSettingsStore();
             settings.Save(new AutoLockSettings { Mode = LockMode.Automatic });
             var autostart = new FakeAutostartRegistry();
-            autostart.Preset("\"watcher\"");
+            autostart.Preset(AutostartCommand.For(ExistingWatcher));
             var watcher = new FakeWatcherProcess { State = WatcherState.Starting };
 
             AutoLockStatus status = Manager(settings, autostart, watcher).GetStatus();
 
             Assert.False(status.WatcherReady, "starting is not ready");
-            Assert.True(status.IsConsistent, "but it is not yet a contradiction either");
+
+            // This used to be accepted as "not yet a contradiction", which meant
+            // a helper stuck half-started looked fine forever. Enable waits for
+            // readiness before returning, so a helper found in this state after
+            // the fact has not simply been caught mid-launch - it is stuck, and
+            // reconciliation should restart it rather than wait indefinitely.
+            Assert.False(status.IsConsistent, "running but never ready is a stuck helper, not a healthy one");
+            Assert.True(status.Inconsistency.Contains("not reported itself ready"), "and says so");
         }
 
         [Test("Status notices a leftover watcher in manual mode")]

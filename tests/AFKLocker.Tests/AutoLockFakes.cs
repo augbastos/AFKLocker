@@ -71,6 +71,9 @@ namespace AFKLocker.Tests
         /// <summary>When set, Unregister throws with this message.</summary>
         public string FailUnregisterWith;
 
+        /// <summary>When set, reading the command throws - a registry that will not open.</summary>
+        public string FailReadWith;
+
         /// <summary>Fail only from the Nth register onwards (used to break rollback).</summary>
         public int FailRegisterFromCall;
 
@@ -81,7 +84,11 @@ namespace AFKLocker.Tests
 
         public string RegisteredCommand
         {
-            get { return _command; }
+            get
+            {
+                if (FailReadWith != null) throw new InvalidOperationException(FailReadWith);
+                return _command;
+            }
         }
 
         public void Register(string command)
@@ -120,6 +127,15 @@ namespace AFKLocker.Tests
         /// <summary>What Start should return. Defaults to success.</summary>
         public WatcherStartResult StartResult;
 
+        /// <summary>
+        /// When set, <see cref="StartResult"/> applies only while this returns
+        /// true. Real start failures usually depend on the configuration being
+        /// started with - a hotkey conflict goes away once the hotkey does - so a
+        /// fake that fails every start cannot tell a broken rollback from a
+        /// rollback that was never given a chance.
+        /// </summary>
+        public Func<bool> FailStartWhile;
+
         /// <summary>When set, Start throws with this message.</summary>
         public string FailStartWith;
 
@@ -141,7 +157,9 @@ namespace AFKLocker.Tests
 
             if (FailStartWith != null) throw new InvalidOperationException(FailStartWith);
 
-            WatcherStartResult result = StartResult ?? WatcherStartResult.Ok();
+            bool failing = StartResult != null
+                && (FailStartWhile == null || FailStartWhile());
+            WatcherStartResult result = failing ? StartResult : WatcherStartResult.Ok();
             // A start that succeeds leaves a ready watcher; one that fails may
             // still have left a process behind, which is why the manager stops
             // it during rollback.

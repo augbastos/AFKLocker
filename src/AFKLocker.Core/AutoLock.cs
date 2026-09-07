@@ -15,11 +15,33 @@ namespace AFKLocker.Core
     /// <summary>How AFKLocker locks the session.</summary>
     public enum LockMode
     {
-        /// <summary>The user double-clicks AFKLocker. Nothing stays resident. The default.</summary>
+        /// <summary>The user double-clicks AFKLocker. The default.</summary>
         Manual,
 
-        /// <summary>A small watcher locks the session when the lid closes.</summary>
+        /// <summary>The background helper locks the session when the lid closes.</summary>
         Automatic
+    }
+
+    /// <summary>
+    /// The jobs the background helper can be asked to do.
+    ///
+    /// This exists because the lock mode stopped being the thing that decides
+    /// whether a process is resident. Manual used to mean "no helper, ever";
+    /// with a global hotkey it can mean "a helper, but only to wait for one
+    /// key". Deriving residency from the features actually switched on keeps
+    /// that from becoming a special case scattered through the lifecycle.
+    /// </summary>
+    [Flags]
+    public enum HelperFeatures
+    {
+        /// <summary>Nothing is switched on, so no helper should exist at all.</summary>
+        None = 0,
+
+        /// <summary>Lock when the lid closes. Automatic mode.</summary>
+        LidLock = 1,
+
+        /// <summary>Lock when the registered key combination is pressed.</summary>
+        GlobalHotkey = 2
     }
 
     public sealed class LidStateEventArgs : EventArgs

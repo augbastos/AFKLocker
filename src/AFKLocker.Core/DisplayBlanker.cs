@@ -24,7 +24,27 @@ namespace AFKLocker.Core
         /// <summary>Ask Windows to turn the display off.</summary>
         TurnOff,
 
-        /// <summary>Stop watching entirely; do not touch the display again.</summary>
+        /// <summary>
+        /// Somebody is touching the machine right now. Wait longer before
+        /// deciding anything, but keep watching: they may be about to sign in,
+        /// or they may walk away again without doing so.
+        /// </summary>
+        Defer,
+
+        /// <summary>
+        /// Asking is not working - something on this machine is holding the
+        /// display on. Keep asking, but slowly, for as long as the session stays
+        /// locked. Whatever is holding it will eventually let go, and when it
+        /// does the screen has to go dark rather than stay lit because a counter
+        /// ran out an hour earlier.
+        /// </summary>
+        BackOff,
+
+        /// <summary>
+        /// Stop watching entirely. The only thing that earns this is somebody
+        /// signing in: the session being unlocked is the one state in which a lit
+        /// screen is correct.
+        /// </summary>
         Stop
     }
 
@@ -74,21 +94,23 @@ namespace AFKLocker.Core
     /// session is already locked, so the lock screen ends up glowing on a desk
     /// nobody is sitting at.
     ///
-    /// The hard part is not turning the display off. It is knowing when to STOP,
-    /// because a blanker that keeps insisting would blank the screen of somebody
-    /// who came back and is typing their password. Hence four independent ways
-    /// to give up, any one of which ends it for good:
+    /// One request is not enough for a second reason, and it is the one that
+    /// took longest to find: <b>Windows ignores a display-off request while
+    /// there has been recent user input.</b> It returns success and does
+    /// nothing. AFKLocker asks about a second after the click that locked the
+    /// machine, so the first request is almost always discarded - measured on a
+    /// real machine, the same request took effect in 200ms once that machine had
+    /// been idle for 94 seconds. Persistence, not a cleverer call, is the answer.
     ///
-    ///   - the session is no longer locked: the person is back and in;
-    ///   - keyboard or mouse input happened: the person is back at the machine;
-    ///   - the lid was opened: on a laptop that is the same signal;
-    ///   - a cap on how many times it will insist, so that if something on this
-    ///     machine really wants the display on, it wins rather than fighting
-    ///     forever.
+    /// So this gives up on exactly one thing: somebody signing in. Everything
+    /// else that used to end it - input, the lid opening, a display that would
+    /// not go dark - now only changes how long it waits. Ending early is what
+    /// left a lock screen glowing all night; waiting costs nothing.
     ///
-    /// The caller adds a time limit on top. Failing open - leaving the display
-    /// on - is always the safe direction: a lit screen on a locked machine is a
-    /// nuisance, a blanked screen under someone's hands is a malfunction.
+    /// The two directions are not symmetrical, and the asymmetry decides every
+    /// judgement call here. A screen that stays lit too long is a nuisance. A
+    /// screen that goes dark under the hands of somebody typing their password
+    /// is a malfunction. So anything ambiguous waits rather than acts.
     /// </summary>
     public sealed class DisplayBlankPolicy
     {
@@ -99,9 +121,9 @@ namespace AFKLocker.Core
         /// </summary>
         public const int DefaultMaxRequests = 5;
 
-        private readonly uint _inputAtStart;
         private readonly int _maxRequests;
 
+        private uint _lastInput;
         private int _requests;
         private bool _stopped;
 
@@ -112,7 +134,7 @@ namespace AFKLocker.Core
 
         public DisplayBlankPolicy(uint inputAtStart, int maxRequests)
         {
-            _inputAtStart = inputAtStart;
+            _lastInput = inputAtStart;
             _maxRequests = maxRequests < 1 ? 1 : maxRequests;
         }
 
@@ -146,32 +168,57 @@ namespace AFKLocker.Core
         {
             if (_stopped) return BlankAction.Nothing;
 
+            // Signing in is the only thing that ends this. Everything else is a
+            // reason to wait, because a lock screen nobody signs into is exactly
+            // the screen that must not stay lit.
             if (!sessionLocked)
                 return StopBecause("the session was unlocked");
 
-            if (lastInputTick != _inputAtStart)
-                return StopBecause("the keyboard or mouse was used");
+            // Input used to stop it outright, which was wrong for anything
+            // longer than a few seconds: somebody who wakes the screen, looks at
+            // it and walks away without signing in would leave it lit for good.
+            // Waiting covers both people - the one about to type their password,
+            // and the one who changed their mind.
+            if (lastInputTick != _lastInput)
+            {
+                _lastInput = lastInputTick;
+                return BlankAction.Defer;
+            }
 
-            // Off or dimmed is the goal, not a problem to solve.
+            // Off or dimmed is the goal, not a problem to solve. Reaching it
+            // also clears the budget: the cap is meant to catch a display that
+            // refuses to go off, not to ration a long lock during which several
+            // separate things wake the screen.
             if (state != DisplayState.On)
+            {
+                _requests = 0;
                 return BlankAction.Nothing;
+            }
 
+            // Asking repeatedly and getting nowhere means something on this
+            // machine is holding the display on - a media session, a remote
+            // control tool, a driver. That used to end the guard, which is the
+            // same as saying "your screen stays lit tonight because it was lit
+            // ten seconds after you locked it". Slow down instead, and keep
+            // asking: the hold is temporary far more often than the lock is.
             if (_requests >= _maxRequests)
-                return StopBecause("something else keeps the display on");
+                return BlankAction.BackOff;
 
             _requests++;
             return BlankAction.TurnOff;
         }
 
         /// <summary>
-        /// The lid moved. Opening it means a person is here; closing it is the
-        /// event this whole class exists to survive, so it changes nothing.
+        /// The lid moved. Opening it means somebody is probably here, which is a
+        /// reason to wait rather than to stop: opening a lid and then walking
+        /// away without signing in is precisely how a lock screen ends up lit for
+        /// an hour. Closing it is the event this whole class exists to survive,
+        /// so it changes nothing.
         /// </summary>
         public BlankAction HandleLid(LidState state)
         {
             if (_stopped) return BlankAction.Nothing;
-            if (state == LidState.Opened)
-                return StopBecause("the lid was opened");
+            if (state == LidState.Opened) return BlankAction.Defer;
             return BlankAction.Nothing;
         }
 
@@ -213,10 +260,37 @@ namespace AFKLocker.Core
     public sealed class DisplayBlanker : IDisposable
     {
         /// <summary>
-        /// Long enough to cover locking and then closing the lid, short enough
-        /// that somebody who walks back to the machine is never fighting it.
+        /// How long it keeps guarding the screens after a lock.
+        ///
+        /// This was 45 seconds, chosen to cover "lock, then close the lid". It
+        /// was too short for the way people actually do it: lock, watch the lock
+        /// screen appear, put things away, and close the lid a minute later. By
+        /// then nothing was watching, and on a machine where Windows never
+        /// darkens the lock screen on its own, the screen stayed lit until
+        /// somebody came back.
+        ///
+        /// Ten minutes was the next attempt, and it was still a guess about how
+        /// long somebody stays away. The honest limit is the lock itself: while
+        /// the session is locked nobody is using this machine, and the moment it
+        /// is unlocked this stops and the process exits. So the number below is
+        /// not a policy, it is a backstop against a session that somehow never
+        /// reports being unlocked.
+        ///
+        /// The program is still not resident in the sense that matters: it does
+        /// not exist while you are working, only while the machine is locked,
+        /// and it holds no execution state and keeps nothing awake.
         /// </summary>
-        public static readonly TimeSpan DefaultTimeLimit = TimeSpan.FromSeconds(45);
+        public static readonly TimeSpan DefaultTimeLimit = TimeSpan.FromHours(12);
+
+        /// <summary>
+        /// How long the first stretch after a lock stays quick to react.
+        ///
+        /// Closing the lid produces a burst of display reconfiguration that has
+        /// to be answered within a second or two or the screen visibly stays on.
+        /// Later relights are a different thing - usually a person - and get a
+        /// patient response instead.
+        /// </summary>
+        private static readonly TimeSpan AggressiveWindow = TimeSpan.FromSeconds(60);
 
         /// <summary>
         /// Windows reconfigures the displays over several messages when the lid
@@ -224,6 +298,49 @@ namespace AFKLocker.Core
         /// the noise to stop.
         /// </summary>
         private static readonly TimeSpan SettleDelay = TimeSpan.FromMilliseconds(1200);
+
+        /// <summary>
+        /// The wait before darkening a screen that lit up well after the lock.
+        ///
+        /// Long enough for somebody who just woke the machine to see the lock
+        /// screen and start typing, short enough that a screen nobody touches
+        /// does not sit lit. This is the console lock display timeout Windows is
+        /// supposed to provide and does not always apply.
+        /// </summary>
+        private static readonly TimeSpan PatientSettleDelay = TimeSpan.FromSeconds(15);
+
+        /// <summary>
+        /// How long to leave the screen alone once somebody is clearly back at
+        /// the machine: the lid was opened, or a key or the mouse was used.
+        ///
+        /// Opening a laptop and having the screen go dark again while you are
+        /// still reaching for the keyboard is worse than the problem this class
+        /// exists to solve. Any further sign of a person restarts this, so it
+        /// cannot expire under someone who is still there - and signing in ends
+        /// the whole thing anyway.
+        /// </summary>
+        private static readonly TimeSpan WakeGrace = TimeSpan.FromSeconds(90);
+
+        /// <summary>
+        /// How often to ask again while the screen is still lit.
+        ///
+        /// This is the number that matters most, and it is set by a measured
+        /// fact about Windows rather than taste: <b>Windows ignores a
+        /// display-off request while there has been recent user input.</b> The
+        /// request returns success and nothing happens.
+        ///
+        /// AFKLocker asks at the worst possible moment - roughly a second after
+        /// the click that locked the machine - so the first request is almost
+        /// always discarded. Measured on a real machine: with 94 seconds of
+        /// idle, the same request took effect in 200 milliseconds.
+        ///
+        /// So the answer is not a cleverer request, it is patience. Ask again
+        /// every few seconds, for as long as the session stays locked, and the
+        /// first attempt after the person actually walks away is the one that
+        /// lands. Asking costs a bounded message send and only happens while the
+        /// screen is lit, which is precisely when it should.
+        /// </summary>
+        private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(5);
 
         private static readonly Guid GuidConsoleDisplayState =
             new Guid("6FE69556-704A-47A0-8F24-C28D936FDA47");
@@ -267,10 +384,30 @@ namespace AFKLocker.Core
         private SessionSwitchEventHandler _sessionHandler;
         private bool _sessionLocked = true;
         private bool _running;
+        private bool _finished;
         private bool _disposed;
 
-        // Locking implies the display is on; anything else arrives by event.
+        // What the display is actually doing, and whether that is known at all.
+        //
+        // Assuming "on" here is what broke this class in the field. The first
+        // request usually lands instantly, so the display is already off and
+        // Windows sends no state-change notification - there was no change. A
+        // wrong assumption of "on" then never got corrected, the verify timer
+        // spent a request against it every 2.5 seconds, and the whole budget was
+        // gone about twelve seconds after locking. Anyone who closed the lid
+        // promptly saw it work; anyone who paused first found nothing left
+        // guarding the screens.
+        //
+        // Windows sends the current state as soon as the notification is
+        // registered, so waiting for that costs milliseconds and removes the
+        // guess entirely.
+        private bool _stateKnown;
+        private bool _backingOff;
         private DisplayState _lastState = DisplayState.On;
+        private DateTime _startedAt = DateTime.UtcNow;
+
+        /// <summary>Until when the screen is off-limits because somebody is here.</summary>
+        private DateTime _graceUntil = DateTime.MinValue;
 
         public DisplayBlanker(IDisplayController displays, IUserInputMonitor input)
             : this(displays, input, DefaultTimeLimit)
@@ -290,6 +427,17 @@ namespace AFKLocker.Core
         /// <summary>Raised once, when it has stopped for good.</summary>
         public event EventHandler Finished;
 
+        /// <summary>
+        /// True once it has stopped. Needed because <see cref="Start"/> can
+        /// finish synchronously, so a caller that only subscribed to
+        /// <see cref="Finished"/> would wait forever for an event that already
+        /// happened.
+        /// </summary>
+        public bool HasFinished
+        {
+            get { return _finished; }
+        }
+
         /// <summary>Why it stopped. Null until it has.</summary>
         public string StopReason
         {
@@ -307,6 +455,16 @@ namespace AFKLocker.Core
 
             _policy = new DisplayBlankPolicy(SafeLastInput());
             _running = true;
+            _startedAt = DateTime.UtcNow;
+
+            // Nobody reuses one of these today, but leaving the finished flag
+            // set from a previous run would make a restarted blanker claim it
+            // had already stopped - and the manual lock skips its message loop
+            // on exactly that claim.
+            _finished = false;
+            _graceUntil = DateTime.MinValue;
+            _backingOff = false;
+            _stateKnown = false;
 
             _window = new NotificationWindow(this);
             bool registered = _window.Start();
@@ -336,6 +494,7 @@ namespace AFKLocker.Core
             _settle.Tick += delegate
             {
                 _settle.Stop();
+                _backingOff = false;
                 RequestOff();
             };
 
@@ -343,10 +502,11 @@ namespace AFKLocker.Core
             _verify.Interval = (int)VerifyInterval.TotalMilliseconds;
             _verify.Tick += delegate
             {
-                // Still lit and nothing told us otherwise: the last request did
-                // not land. Run it through the same decision, so the cap and the
-                // stop conditions apply exactly as they do to a real event.
-                if (_lastState != DisplayState.Off)
+                // Only act on something known. Silence is not evidence: a
+                // display that is already off produces no notification, and
+                // treating that silence as "still lit" is exactly the bug that
+                // made this give up twelve seconds after every lock.
+                if (_stateKnown && _lastState == DisplayState.On)
                     Decide(DisplayState.On);
             };
             _verify.Start();
@@ -361,6 +521,28 @@ namespace AFKLocker.Core
             }
 
             return registered;
+        }
+
+        /// <summary>Restarts the countdown to the next display-off request.</summary>
+        private void Rearm(TimeSpan delay)
+        {
+            if (_settle == null) return;
+            _settle.Stop();
+            _settle.Interval = (int)Math.Max(1, delay.TotalMilliseconds);
+            _settle.Start();
+        }
+
+        /// <summary>
+        /// Quick while the lid is still being closed, patient afterwards.
+        /// </summary>
+        private TimeSpan CurrentSettleDelay
+        {
+            get
+            {
+                return DateTime.UtcNow - _startedAt < AggressiveWindow
+                    ? SettleDelay
+                    : PatientSettleDelay;
+            }
         }
 
         private uint SafeLastInput()
@@ -379,6 +561,7 @@ namespace AFKLocker.Core
         {
             if (!_running) return;
             _lastState = state;
+            _stateKnown = true;
             Decide(state);
         }
 
@@ -392,8 +575,31 @@ namespace AFKLocker.Core
             {
                 // Deliberately not immediate: the display coming back on is the
                 // middle of a reconfiguration, not the end of one.
-                _settle.Stop();
-                _settle.Start();
+                _backingOff = false;
+                Rearm(CurrentSettleDelay);
+                return;
+            }
+
+            if (action == BlankAction.Defer)
+            {
+                // Somebody is at the machine. Hands off the screen entirely for
+                // a while, and restart that from scratch however many times they
+                // touch it.
+                _backingOff = false;
+                _graceUntil = DateTime.UtcNow + WakeGrace;
+                Rearm(WakeGrace);
+                return;
+            }
+
+            if (action == BlankAction.BackOff)
+            {
+                // Already waiting out a slow retry: leave the countdown alone.
+                // Restarting it every time the display reports itself on is how
+                // a long timer never fires at all.
+                if (_backingOff) return;
+
+                _backingOff = true;
+                Rearm(RetryDelay);
                 return;
             }
 
@@ -420,6 +626,18 @@ namespace AFKLocker.Core
 
         private void RequestOff()
         {
+            // The one gate every path goes through. The timers are driven from
+            // several places - a display event, the verify tick, a retry - and
+            // any of them could otherwise darken the screen of somebody who has
+            // just opened the lid. Checking here rather than at each caller is
+            // what makes that impossible rather than merely unlikely.
+            TimeSpan remaining = _graceUntil - DateTime.UtcNow;
+            if (remaining > TimeSpan.Zero)
+            {
+                Rearm(remaining);
+                return;
+            }
+
             try
             {
                 _displays.TurnOff();
@@ -449,6 +667,7 @@ namespace AFKLocker.Core
         {
             if (!_running) return;
             _running = false;
+            _finished = true;
 
             DisposeTimer(ref _settle);
             DisposeTimer(ref _verify);

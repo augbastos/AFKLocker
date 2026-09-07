@@ -19,12 +19,24 @@ lock the session before you leave.
 
 ---
 
-## Two ways to lock
+## Three ways to lock
 
-**Manual** — the default. Nothing of AFKLocker stays running once the screens are dark.
+**Manual** — the default. Nothing of AFKLocker stays running once you sign back in.
 
 ```
 Double-click AFKLocker
+        ↓
+Windows locks, screens go dark
+        ↓
+Close the lid
+        ↓
+Work keeps running
+```
+
+**Global hotkey** — opt-in. One key combination, anywhere, without reaching for the mouse.
+
+```
+Press your hotkey
         ↓
 Windows locks, screens go dark
         ↓
@@ -43,10 +55,39 @@ AFKLocker locks Windows
 Work keeps running
 ```
 
-Manual remains the default because AFKLocker does not need to stay resident to do its job.
-Automatic mode is there for people who move between places often and want lid-close itself to
-mean "lock and keep working". You turn it on in AFKLocker Setup; it is never enabled by
-installing.
+Manual remains the default because AFKLocker does not need to stay resident to do its job. The
+other two are for people who move between places often; you turn them on in AFKLocker Setup, and
+neither is enabled by installing.
+
+### About the hotkey
+
+You choose the keys — AFKLocker does not pick one for you and does not ship a default. Click the
+box in Setup and press what you want. The **Menu** key, the one next to the right `Ctrl` on many
+keyboards, works on its own and is a good candidate precisely because almost nothing else uses it;
+so do combinations like `Ctrl` + `Alt` + `L`.
+
+**AFKLocker does not monitor what you type.** The hotkey is a reservation, not a keyboard watcher:
+AFKLocker asks Windows to be told when that one combination is pressed, and Windows tells it only
+that. No other keystroke reaches the program, and none is recorded anywhere — including in the
+diagnostics bundle, which reports the key you *chose* and nothing about keys you press.
+
+If another program already owns the combination, Setup says so when you pick it rather than
+failing quietly later. Some combinations belong to Windows itself — `Win` + `L`, `Ctrl` + `Esc`,
+`Alt` + `Tab`, F12 — and it will refuse those the same way.
+
+Turning the hotkey on starts a small background helper, because something has to be waiting for
+the key. It is the same helper automatic mode uses, so switching both on does not run two of them.
+
+### What stays running
+
+| Automatic | Global hotkey | Background helper |
+|---|---|---|
+| off | off | **none** |
+| off | on | runs, for the hotkey |
+| on | off | runs, for the lid |
+| on | on | one process, both jobs |
+
+Turning one off never stops a helper the other still needs.
 
 ---
 
@@ -239,8 +280,9 @@ a desk you have walked away from.
 - Automatic lock works regardless of your battery settings, but if Windows is still set to sleep
   when the lid closes on battery, it will lock and *then* sleep. Setup says so when that applies.
 
-For diagnostics: `AFKLockerWatcher.exe --status` reports the mode, whether a watcher is running,
-and the autostart entry; `--stop` asks a running one to exit.
+For diagnostics: `AFKLockerWatcher.exe --status` reports the lock mode, the hotkey, which features
+need the helper, whether one is running, and what the sign-in entry actually points at; `--stop`
+asks a running one to exit.
 
 ## Power settings AFKLocker changes
 
@@ -375,13 +417,24 @@ account and no background reporting. What follows only happens when you press a 
 
 If something does not work, **AFKLocker Setup → Diagnostics** runs a self-test and tells you what
 this machine can and cannot do: whether Windows reports a lid, whether the power settings allow
-closed-lid operation, whether the watcher starts and reaches READY, and whether the saved
+closed-lid operation, whether the helper starts and reaches READY, whether Windows will accept
+your hotkey, whether the sign-in entry points at *this* installation, and whether the saved
 configuration matches reality.
+
+The autostart check reports one of:
+
+```
+Autostart: PASS — points to current AFKLocker helper
+Autostart: FAIL — entry points to a different location
+```
+
+The second one is not hypothetical: an entry left behind by an older install has the same file
+name, satisfies a "does this mention AFKLockerWatcher.exe" check, and starts nothing.
 
 Two of the checks are optional because they touch the running system:
 
-- **Test the watcher** starts one, confirms the handshake, stops it, and puts the previous state
-  back. If automatic mode was on, it stays on.
+- **Test the helper** starts one, confirms the handshake, stops it, and puts the previous state
+  back. If automatic mode or the hotkey was on, it stays on.
 - **Test lid detection** asks you to close and open the lid, and reports what Windows delivered.
   **It never locks your session** - it only listens.
 
@@ -398,11 +451,18 @@ AFKLocker-Diagnostics-20260907-104500.zip
 and a battery, Modern Standby and S3 support, the power plan type, the specific power settings
 AFKLocker reads, AFKLocker's own mode and state, and the results of the tests you ran.
 
+It also reports the hotkey **you chose** and whether Windows accepts it — for example
+`Hotkey: Menu` and `Hotkey registration: PASS`.
+
 **What it does not contain:** your username or computer name, IP or MAC addresses, Wi-Fi networks,
 your files, installed programs, running processes, environment variables, or registry values
 outside AFKLocker's own. Paths are replaced with placeholders - `%LOCALAPPDATA%\AFKLocker\` rather
 than a folder with your name in it - and a path outside the known folders is reduced to just its
 file name.
+
+**And no keyboard activity of any kind.** Not the keys you press, not when you pressed them, not
+how many. The bundle reports the combination you configured, which is a setting, and nothing about
+the keyboard, which would be surveillance. AFKLocker cannot report what it never sees.
 
 Manufacturer and model are **off by default**. They would help build a picture of which laptops
 work, but that is information about your hardware and yours to volunteer, so there is a tick box

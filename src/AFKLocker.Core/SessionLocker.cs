@@ -61,12 +61,31 @@ namespace AFKLocker.Core
         private const int SC_MONITORPOWER = 0xF170;
         private const int MONITOR_OFF = 2;
 
-        [DllImport("user32.dll", CharSet = CharSet.Auto)]
-        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+        private const uint SMTO_ABORTIFHUNG = 0x0002;
+        private const int BroadcastTimeoutMilliseconds = 2000;
 
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr SendMessageTimeout(IntPtr hWnd, int msg, IntPtr wParam,
+            IntPtr lParam, uint flags, uint timeoutMilliseconds, out IntPtr result);
+
+        /// <summary>
+        /// Asks every top-level window's default handler to put the monitors
+        /// into standby, which is what actually powers a panel down rather than
+        /// painting it black.
+        ///
+        /// Deliberately SendMessageTimeout rather than SendMessage. A broadcast
+        /// with SendMessage is synchronous against every top-level window on the
+        /// desktop, so one application that has stopped pumping messages blocks
+        /// this call - and therefore the whole lock-and-darken sequence - with no
+        /// timeout at all. That failure gets likelier the longer a machine has
+        /// been running, which is exactly the shape of "it worked this morning
+        /// and not tonight". SMTO_ABORTIFHUNG steps over those windows instead.
+        /// </summary>
         public void TurnOff()
         {
-            SendMessage(HWND_BROADCAST, WM_SYSCOMMAND, new IntPtr(SC_MONITORPOWER), new IntPtr(MONITOR_OFF));
+            IntPtr result;
+            SendMessageTimeout(HWND_BROADCAST, WM_SYSCOMMAND, new IntPtr(SC_MONITORPOWER),
+                new IntPtr(MONITOR_OFF), SMTO_ABORTIFHUNG, BroadcastTimeoutMilliseconds, out result);
         }
     }
 }
