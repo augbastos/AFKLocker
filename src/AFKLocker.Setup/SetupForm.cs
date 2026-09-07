@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Windows.Forms;
 using AFKLocker.Core;
+using AFKLocker.Core.Diagnostics;
 
 namespace AFKLocker.Setup
 {
@@ -43,6 +44,7 @@ namespace AFKLocker.Setup
 
         private readonly Button _applyButton = new Button();
         private readonly Button _restoreButton = new Button();
+        private readonly Button _diagnosticsButton = new Button();
         private readonly Button _closeButton = new Button();
 
         private ReadinessReport _report;
@@ -64,7 +66,34 @@ namespace AFKLocker.Setup
 
             BuildLayout();
             _batteryCheck.Checked = preselectBattery;
+            ReconcileOnOpen();
             Refresh(showErrors: true);
+        }
+
+        /// <summary>
+        /// Puts reality back in line with the saved mode before showing
+        /// anything.
+        ///
+        /// State drifts for ordinary reasons - the watcher was killed in Task
+        /// Manager, a cleanup tool removed the startup entry, a crash left a
+        /// stale signal. Repairing it here means the window shows a working
+        /// machine instead of a puzzle for the user to solve.
+        /// </summary>
+        private void ReconcileOnOpen()
+        {
+            try
+            {
+                AutoLockResult result = _autoLock.Reconcile();
+                if (!result.Success)
+                    ShowMessage(DescribeFailure(
+                        "AFKLocker found automatic locking in a broken state and could not repair it.",
+                        result), MessageBoxIcon.Warning);
+            }
+            catch (Exception)
+            {
+                // Never stop the window opening over this: the status it shows
+                // will report the inconsistency anyway.
+            }
         }
 
         private void BuildLayout()
@@ -164,6 +193,11 @@ namespace AFKLocker.Setup
             _restoreButton.Anchor = AnchorStyles.Top | AnchorStyles.Left;
             _restoreButton.Click += OnRestoreClicked;
 
+            _diagnosticsButton.Text = "Diagnostics";
+            _diagnosticsButton.Size = new Size(100, 32);
+            _diagnosticsButton.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+            _diagnosticsButton.Click += OnDiagnosticsClicked;
+
             _closeButton.Text = "Close";
             _closeButton.Size = new Size(100, 32);
             _closeButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
@@ -178,7 +212,7 @@ namespace AFKLocker.Setup
                 _readinessHeader, _planLabel, _checksPanel, _separator, _summaryLabel,
                 _batteryCheck, _batteryNote,
                 _lockHeader, _manualRadio, _manualNote, _automaticRadio, _automaticNote, _watcherStatus,
-                _applyButton, _restoreButton, _closeButton
+                _applyButton, _restoreButton, _diagnosticsButton, _closeButton
             });
         }
 
@@ -250,6 +284,7 @@ namespace AFKLocker.Setup
             int buttonRow = y;
             _applyButton.Location = new Point(EdgeMargin, buttonRow);
             _restoreButton.Location = new Point(_applyButton.Right + 8, buttonRow);
+            _diagnosticsButton.Location = new Point(_restoreButton.Right + 8, buttonRow);
             _closeButton.Location = new Point(ClientSize.Width - EdgeMargin - _closeButton.Width, buttonRow);
 
             int desired = buttonRow + _applyButton.Height + 20;
@@ -334,10 +369,12 @@ namespace AFKLocker.Setup
             _automaticRadio.Enabled = status.WatcherInstalled;
             _watcherStatus.Text = DescribeWatcher(status);
 
-            // Red for the two cases where automatic mode is on but will not
-            // actually lock: no watcher, or a machine that reports no lid.
+            // Red whenever automatic mode is on but will not actually lock:
+            // the watcher is not ready, the configuration disagrees with
+            // reality, or the machine reports no lid at all.
             bool wontWork = status.Mode == LockMode.Automatic
-                && (!status.WatcherRunning
+                && (!status.WatcherReady
+                    || !status.IsConsistent
                     || (_report != null
                         && AutoLockAdvisor.Evaluate(status.Mode, _report.Snapshot)
                            == AutoLockWarning.NoLidReported));
@@ -356,10 +393,13 @@ namespace AFKLocker.Setup
                 return "Watcher: not running. Nothing of AFKLocker is resident in manual mode.";
 
             var text = new StringBuilder();
-            text.Append(status.WatcherRunning
-                ? "Watcher: running. It starts again each time you sign in."
-                : "Watcher: not running, although automatic mode is on. Select Manual and then "
-                  + "Automatic again to restart it.");
+            text.Append(DescribeWatcherState(status.WatcherState));
+
+            // A mismatch between what was configured and what is true gets said
+            // plainly, rather than showing a healthy-looking line over a broken
+            // setup.
+            if (!status.IsConsistent)
+                text.Append("\r\n" + status.Inconsistency);
 
             // "The watcher is running" is not the same as "closing the lid will
             // lock". Anything that stands between the two gets said here.
@@ -372,6 +412,26 @@ namespace AFKLocker.Setup
             }
 
             return text.ToString();
+        }
+
+        /// <summary>
+        /// "Running" and "able to lock" are different claims, so the wording
+        /// tracks the actual state rather than flattening them into one.
+        /// </summary>
+        private static string DescribeWatcherState(WatcherState state)
+        {
+            switch (state)
+            {
+                case WatcherState.Ready:
+                    return "Watcher: ready and listening for the lid. It starts again each time you sign in.";
+                case WatcherState.Starting:
+                    return "Watcher: starting - running, but not yet listening for the lid.";
+                case WatcherState.Unhealthy:
+                    return "Watcher: unhealthy. Select Manual and then Automatic again to restart it.";
+                default:
+                    return "Watcher: not running, although automatic mode is on. Select Manual and "
+                           + "then Automatic again to restart it.";
+            }
         }
 
         private void OnModeChanged(object sender, EventArgs e)
@@ -405,9 +465,10 @@ namespace AFKLocker.Setup
 
             try
             {
-                if (!_autoLock.Enable())
-                    ShowMessage("Could not start the watcher: AFKLockerWatcher.exe was not found "
-                                + "next to this program.", MessageBoxIcon.Warning);
+                AutoLockResult result = _autoLock.Enable();
+                if (!result.Success)
+                    ShowMessage(DescribeFailure("Automatic locking could not be turned on.", result),
+                        MessageBoxIcon.Warning);
             }
             catch (Exception ex)
             {
@@ -421,9 +482,10 @@ namespace AFKLocker.Setup
         {
             try
             {
-                if (!_autoLock.Disable())
-                    ShowMessage("Automatic locking is off, but the watcher did not stop in time. "
-                                + "It will not start again when you sign in.", MessageBoxIcon.Warning);
+                AutoLockResult result = _autoLock.Disable();
+                if (!result.Success)
+                    ShowMessage(DescribeFailure("Automatic locking was switched off, but not cleanly.",
+                        result), MessageBoxIcon.Warning);
             }
             catch (Exception ex)
             {
@@ -431,6 +493,37 @@ namespace AFKLocker.Setup
             }
 
             RefreshLockBehaviour();
+        }
+
+        /// <summary>
+        /// Explains a failure, and - just as importantly - whether it left
+        /// anything behind. "It failed and everything was put back" and "it
+        /// failed and something is still half-configured" call for different
+        /// reactions from the user.
+        /// </summary>
+        private static string DescribeFailure(string headline, AutoLockResult result)
+        {
+            var text = new StringBuilder();
+            text.AppendLine(headline);
+            text.AppendLine();
+            text.AppendLine(result.Message);
+
+            if (result.RolledBack && result.IsClean)
+            {
+                text.AppendLine();
+                text.AppendLine("Everything was put back the way it was - this machine is in manual "
+                                + "mode and nothing of AFKLocker is running.");
+            }
+
+            if (!result.IsClean)
+            {
+                text.AppendLine();
+                text.AppendLine("These could not be cleaned up:");
+                foreach (string item in result.Residue)
+                    text.AppendLine("  - " + item);
+            }
+
+            return text.ToString();
         }
 
         // -------------------------------------------------------- power settings ---
@@ -587,6 +680,64 @@ namespace AFKLocker.Setup
             }
 
             Refresh(showErrors: false);
+        }
+
+        /// <summary>
+        /// Opens the diagnostics window, wiring it to the same real components
+        /// this window uses so the report describes this machine and not a
+        /// simulation of it.
+        /// </summary>
+        private void OnDiagnosticsClicked(object sender, EventArgs e)
+        {
+            try
+            {
+                using (var form = new DiagnosticsForm(RunSelfTest, CreateLidTest))
+                {
+                    form.ShowDialog(this);
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowMessage("Diagnostics could not be opened.\r\n\r\n" + ex.Message,
+                    MessageBoxIcon.Warning);
+            }
+
+            // A self-test can start and stop the watcher, so re-read the state.
+            RefreshLockBehaviour();
+        }
+
+        private DiagnosticReport RunSelfTest(SelfTestOptions options)
+        {
+            return RunSelfTestOn(options);
+        }
+
+        /// <summary>
+        /// Builds and runs a self-test against the real machine. Static so the
+        /// diagnostics window can be opened on its own, without a setup window
+        /// behind it.
+        /// </summary>
+        internal static DiagnosticReport RunSelfTestOn(SelfTestOptions options)
+        {
+            var selfTest = new SelfTest(
+                new WindowsPowerConfiguration(), new WindowsPowerInformation(), new FileBackupStore(),
+                new FileSettingsStore(),
+                new RunKeyAutostartRegistry(),
+                new WatcherController(),
+                new WindowsEnvironmentProbe(),
+                new PathRedactor(),
+                WatcherController.DefaultWatcherPath);
+
+            return selfTest.Run(options);
+        }
+
+        private static LidDetectionTest CreateLidTest()
+        {
+            return CreateLidTestOn();
+        }
+
+        internal static LidDetectionTest CreateLidTestOn()
+        {
+            return new LidDetectionTest(new LidNotificationWindow());
         }
 
         /// <summary>
