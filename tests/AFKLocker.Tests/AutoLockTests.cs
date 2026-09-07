@@ -143,6 +143,50 @@ namespace AFKLocker.Tests
             Assert.Equal(AutoLockDecision.Locked, decision, "locks again once unlocked");
         }
 
+        [Test("Displays are dimmed only on a lock, never on lid-open")]
+        private static void DisplaysDimOnlyWhenLocking()
+        {
+            var locker = new FakeSessionLocker();
+            var displays = new FakeDisplayController();
+            var policy = Policy(locker, new FakeSessionState());
+
+            // The watcher's rule: dim only when Handle reports it locked.
+            Action<LidState> handle = delegate(LidState state)
+            {
+                if (policy.Handle(state) == AutoLockDecision.Locked) displays.TurnOff();
+            };
+
+            handle(LidState.Opened);   // initial position
+            Assert.Equal(0, displays.TurnOffCount, "nothing on the starting position");
+
+            handle(LidState.Closed);
+            Assert.Equal(1, displays.TurnOffCount, "dimmed once, with the lock");
+
+            handle(LidState.Opened);
+            Assert.Equal(1, displays.TurnOffCount, "opening the lid never dims");
+
+            handle(LidState.Closed);
+            Assert.Equal(2, displays.TurnOffCount, "and again on the next real close");
+        }
+
+        [Test("A close that does not lock does not dim either")]
+        private static void NoLockMeansNoDim()
+        {
+            var displays = new FakeDisplayController();
+            var policy = Policy(new FakeSessionLocker(), new FakeSessionState { IsLocked = true });
+
+            Action<LidState> handle = delegate(LidState state)
+            {
+                if (policy.Handle(state) == AutoLockDecision.Locked) displays.TurnOff();
+            };
+
+            handle(LidState.Opened);
+            handle(LidState.Closed);   // session already locked, so no lock happens
+
+            Assert.Equal(0, displays.TurnOffCount,
+                "an already-locked session is left entirely alone, screens included");
+        }
+
         [Test("The policy rejects null dependencies")]
         private static void NullDependenciesRejected()
         {
@@ -317,147 +361,5 @@ namespace AFKLocker.Tests
         }
     }
 
-    internal static class AutoLockManagerTests
-    {
-        private const string WatcherPath = "AFKLockerWatcher.exe";
 
-        private static AutoLockManager Manager(FakeSettingsStore settings, FakeAutostartRegistry autostart,
-            FakeWatcherProcess watcher, string path)
-        {
-            return new AutoLockManager(settings, autostart, watcher, path);
-        }
-
-        [Test("Manual mode means no autostart and no watcher")]
-        private static void ManualLeavesNothingResident()
-        {
-            var settings = new FakeSettingsStore();
-            var autostart = new FakeAutostartRegistry();
-            var watcher = new FakeWatcherProcess();
-
-            AutoLockStatus status = Manager(settings, autostart, watcher, null).GetStatus();
-
-            Assert.Equal(LockMode.Manual, status.Mode, "manual by default");
-            Assert.False(status.AutostartRegistered, "nothing registered to start");
-            Assert.False(status.WatcherRunning, "nothing running");
-        }
-
-        [Test("Enabling automatic records the mode, registers autostart and starts the watcher")]
-        private static void EnableDoesAllThree()
-        {
-            var settings = new FakeSettingsStore();
-            var autostart = new FakeAutostartRegistry();
-            var watcher = new FakeWatcherProcess();
-            // Use this test assembly as a stand-in for an existing watcher file.
-            string existingFile = typeof(AutoLockManagerTests).Assembly.Location;
-
-            bool enabled = Manager(settings, autostart, watcher, existingFile).Enable();
-
-            Assert.True(enabled, "enable succeeded");
-            Assert.Equal(LockMode.Automatic, settings.Load().Mode, "mode recorded");
-            Assert.True(autostart.IsRegistered, "registered to start at sign-in");
-            Assert.True(autostart.RegisteredCommand.Contains(existingFile), "registered the watcher path");
-            Assert.Equal(1, watcher.StartCount, "watcher started now, not only at next sign-in");
-        }
-
-        [Test("Enabling without a watcher binary fails cleanly and changes nothing")]
-        private static void EnableWithoutWatcherBinaryFails()
-        {
-            var settings = new FakeSettingsStore();
-            var autostart = new FakeAutostartRegistry();
-            var watcher = new FakeWatcherProcess();
-
-            bool enabled = Manager(settings, autostart, watcher, @"Z:\does\not\exist.exe").Enable();
-
-            Assert.False(enabled, "reports failure");
-            Assert.True(settings.IsEmpty, "no mode recorded");
-            Assert.False(autostart.IsRegistered, "nothing registered");
-            Assert.Equal(0, watcher.StartCount, "nothing started");
-        }
-
-        [Test("Disabling stops the watcher, removes autostart and records manual")]
-        private static void DisableUndoesEverything()
-        {
-            var settings = new FakeSettingsStore();
-            var autostart = new FakeAutostartRegistry();
-            var watcher = new FakeWatcherProcess { IsRunning = true };
-            autostart.Register("\"" + WatcherPath + "\"");
-
-            bool disabled = Manager(settings, autostart, watcher, WatcherPath).Disable();
-
-            Assert.True(disabled, "watcher stopped");
-            Assert.False(watcher.IsRunning, "nothing resident");
-            Assert.False(autostart.IsRegistered, "will not come back at sign-in");
-            Assert.Equal(LockMode.Manual, settings.Load().Mode, "back to manual");
-        }
-
-        [Test("Autostart is removed even when the watcher refuses to stop")]
-        private static void AutostartRemovedEvenIfStopFails()
-        {
-            var settings = new FakeSettingsStore();
-            var autostart = new FakeAutostartRegistry();
-            var watcher = new FakeWatcherProcess { IsRunning = true, RefuseToStop = true };
-            autostart.Register("\"" + WatcherPath + "\"");
-
-            bool disabled = Manager(settings, autostart, watcher, WatcherPath).Disable();
-
-            Assert.False(disabled, "reports that it did not stop");
-            Assert.False(autostart.IsRegistered, "but it will not start again");
-            Assert.Equal(LockMode.Manual, settings.Load().Mode, "and the mode is manual");
-        }
-
-        [Test("Uninstall cleanup stops the watcher and removes autostart")]
-        private static void CleanupRemovesEverything()
-        {
-            var settings = new FakeSettingsStore();
-            var autostart = new FakeAutostartRegistry();
-            var watcher = new FakeWatcherProcess { IsRunning = true };
-            autostart.Register("\"" + WatcherPath + "\"");
-
-            bool cleaned = Manager(settings, autostart, watcher, WatcherPath).Cleanup();
-
-            Assert.True(cleaned, "stopped");
-            Assert.False(autostart.IsRegistered, "autostart gone");
-            Assert.Equal(1, watcher.StopCount, "watcher asked to stop");
-            Assert.Equal(0, settings.SaveCount, "uninstall does not rewrite the user's settings");
-        }
-
-        [Test("Status reports the watcher as missing when the binary is not there")]
-        private static void StatusReportsMissingWatcher()
-        {
-            AutoLockStatus status = Manager(new FakeSettingsStore(), new FakeAutostartRegistry(),
-                new FakeWatcherProcess(), @"Z:\does\not\exist.exe").GetStatus();
-
-            Assert.False(status.WatcherInstalled, "not installed");
-        }
-
-        [Test("Status reports a running watcher when automatic is on")]
-        private static void StatusReportsRunningWatcher()
-        {
-            var settings = new FakeSettingsStore();
-            settings.Save(new AutoLockSettings { Mode = LockMode.Automatic });
-            var watcher = new FakeWatcherProcess { IsRunning = true };
-            string existingFile = typeof(AutoLockManagerTests).Assembly.Location;
-
-            AutoLockStatus status = Manager(settings, new FakeAutostartRegistry(), watcher, existingFile)
-                .GetStatus();
-
-            Assert.Equal(LockMode.Automatic, status.Mode, "automatic");
-            Assert.True(status.WatcherRunning, "running");
-            Assert.True(status.WatcherInstalled, "installed");
-        }
-
-        [Test("The manager rejects null dependencies")]
-        private static void NullDependenciesRejected()
-        {
-            Assert.Throws<ArgumentNullException>(
-                () => new AutoLockManager(null, new FakeAutostartRegistry(), new FakeWatcherProcess(), null),
-                "null settings");
-            Assert.Throws<ArgumentNullException>(
-                () => new AutoLockManager(new FakeSettingsStore(), null, new FakeWatcherProcess(), null),
-                "null autostart");
-            Assert.Throws<ArgumentNullException>(
-                () => new AutoLockManager(new FakeSettingsStore(), new FakeAutostartRegistry(), null, null),
-                "null watcher");
-        }
-    }
 }

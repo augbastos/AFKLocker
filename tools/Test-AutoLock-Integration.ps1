@@ -66,17 +66,22 @@ try {
     $manager = New-Manager
     # No sleep here on purpose: Enable() must not return until the watcher
     # has actually registered, or the UI that refreshes right after lies.
-    Check "enable reports success" $true $manager.Enable()
+    $enableResult = $manager.Enable()
+    Check "enable reports success" $true $enableResult.Success
+    Check "enable left nothing half-done" $true $enableResult.IsClean
 
     Check "settings file written" $true (Test-Path $settingsPath)
     Check "mode recorded as automatic" "Automatic" (New-Object AFKLocker.Core.FileSettingsStore).Load().Mode
     Check "autostart registered" $true ((Get-AutostartValue) -ne $null)
     Check "autostart points at the watcher" $true ((Get-AutostartValue) -like "*AFKLockerWatcher.exe*")
     Check "watcher is running" $true ([AFKLocker.Core.WatcherController]::IsAnyRunning)
+    Check "watcher signalled READY" $true ([AFKLocker.Core.WatcherController]::IsAnyReady)
+    Check "state is Ready, not merely Starting" "Ready" (New-Object AFKLocker.Core.WatcherController).GetState()
 
     $status = $manager.GetStatus()
     Check "status reports automatic" "Automatic" $status.Mode
-    Check "status reports watcher running" $true $status.WatcherRunning
+    Check "status reports watcher ready" $true $status.WatcherReady
+    Check "status reports a consistent configuration" $true $status.IsConsistent
     Check "status reports watcher installed" $true $status.WatcherInstalled
 
     # ------------------------------------------------- watcher stays in its lane ---
@@ -108,19 +113,23 @@ try {
     Check "still exactly one watcher process" 1 $count
 
     # --------------------------------------------------------------- disable ---
-    Check "disable reports success" $true (New-Manager).Disable()
+    $disableResult = (New-Manager).Disable()
+    Check "disable reports success" $true $disableResult.Success
+    Check "disable left nothing behind" $true $disableResult.IsClean
     Start-Sleep -Milliseconds 500
 
     Check "watcher stopped" $false ([AFKLocker.Core.WatcherController]::IsAnyRunning)
+    Check "ready signal cleared" $false ([AFKLocker.Core.WatcherController]::IsAnyReady)
     Check "no watcher process left" 0 (Get-Process AFKLockerWatcher -ErrorAction SilentlyContinue | Measure-Object).Count
     Check "autostart removed" $true ((Get-AutostartValue) -eq $null)
     Check "mode back to manual" "Manual" (New-Object AFKLocker.Core.FileSettingsStore).Load().Mode
 
     # ------------------------------------------------------- uninstall cleanup ---
     (New-Manager).Enable() | Out-Null
-    Check "re-enabled for the cleanup check" $true ([AFKLocker.Core.WatcherController]::IsAnyRunning)
+    Check "re-enabled for the cleanup check" $true ([AFKLocker.Core.WatcherController]::IsAnyReady)
 
-    Check "cleanup reports success" $true (New-Manager).Cleanup()
+    $cleanupResult = (New-Manager).Cleanup()
+    Check "cleanup reports success" $true $cleanupResult.Success
     Start-Sleep -Milliseconds 500
     Check "cleanup stopped the watcher" $false ([AFKLocker.Core.WatcherController]::IsAnyRunning)
     Check "cleanup removed autostart" $true ((Get-AutostartValue) -eq $null)
