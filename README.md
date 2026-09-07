@@ -273,7 +273,8 @@ Also worth knowing:
 - **Windows 10 and Windows 11.** Windows 8.1 should work; it hasn't been tried.
 - Requires **.NET Framework 4.8**, which ships with Windows 10 (1903+) and Windows 11. There is no
   runtime to install.
-
+- **Physically tested on a single Windows 11 laptop.** Everything else is covered by unit tests
+  against simulated machines, not by hardware.
 
 That's the honest scope. It's a small utility that talks to a well-documented Windows API, so it
 should behave the same elsewhere - but "should" is not "was tested", and this README isn't going
