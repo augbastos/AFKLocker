@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-09-07
+
+### Added
+
+- Setup now detects machines that do not report lid state to Windows and says so, instead of
+  leaving automatic mode looking healthy while never firing. It names the likely cause - the
+  **ACPI Lid** device disabled in Device Manager - so it can be acted on.
+
+  This was found on the development machine itself: automatic mode reported a running watcher,
+  closing the lid did nothing, and there was no way to tell why without a debugger. Disabling the
+  ACPI Lid device is a common trick for stopping a laptop sleeping on lid close, which AFKLocker
+  makes unnecessary - and which silently breaks this feature.
+
+### Changed
+
+- The battery note and the no-lid warning now come from one place, so the more serious problem
+  wins: a machine that cannot lock at all is reported ahead of one that merely sleeps afterwards
+  on battery.
+
 ## [0.2.1] - 2026-09-07
 
 ### Fixed
@@ -87,6 +106,7 @@ Initial release.
   covered by tests against simulated machines.
 - Binaries are not code-signed, so SmartScreen will warn on first run.
 
+[0.2.2]: https://github.com/augbastos/AFKLocker/releases/tag/v0.2.2
 [0.2.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.2.1
 [0.2.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.2.0
 [0.1.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.1.1
