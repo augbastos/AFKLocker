@@ -102,6 +102,88 @@ One thing this surfaced: `SYSTEM_POWER_CAPABILITIES.LidPresent` returns **false*
 this was developed on, which certainly has a lid. So readiness checks key off whether the lid
 close *setting* exists, and the capability flag is only used to word a message.
 
+## The watcher handshake: running is not ready
+
+Three named kernel objects in the session's namespace (`Local\`), so each signed-in user has their
+own and switching users does not cross the wires:
+
+| Object | Meaning |
+|---|---|
+| `Local\AFKLocker.Watcher.Running` | A mutex held for the lifetime of the process |
+| `Local\AFKLocker.Watcher.Ready` | An event set once the watcher can actually receive lid events |
+| `Local\AFKLocker.Watcher.Stop` | An event set to ask the watcher to exit |
+
+**Running and Ready are separate because they answer different questions.** The process claims the
+mutex almost immediately, long before the runtime is up, the notification window exists, or
+Windows has accepted the lid registration. Waiting on the mutex alone therefore proves nothing: a
+watcher that fails to register for lid events would hold it and look perfectly healthy while never
+locking anything.
+
+Ready is set only after every step needed to do the job has succeeded - single instance, session
+tracking started, window created, `RegisterPowerSettingNotification` accepted, handlers attached -
+and is reset the moment the process starts going away, so a dying watcher never leaves a ready
+signal behind.
+
+`WatcherController.Start` waits for **Ready**, the process to die, or a timeout, whichever comes
+first. A watcher that cannot register exits with a distinct code and the caller learns
+immediately rather than waiting out the full timeout. That gives four states the UI can report
+honestly instead of one boolean: `NotRunning`, `Starting`, `Ready`, `Unhealthy`.
+
+## Enabling automatic mode is transactional
+
+Turning automatic mode on touches three things - the saved mode, the autostart entry, the running
+process - and any of them can fail. Half-applied is the worst outcome: a machine that believes it
+is protected and is not.
+
+So each step records how to undo itself, and a failure unwinds the ones before it. `Enable` leaves
+exactly one of two states behind:
+
+1. **Automatic and genuinely working** - mode saved, autostart registered, watcher Ready.
+2. **Manual and clean** - previous mode restored, no autostart, no watcher.
+
+There is deliberately no third outcome. What the previous state *was* is restored, not assumed: an
+autostart entry that already pointed somewhere else is put back as it was rather than deleted.
+
+Rollback can itself fail, and that is reported rather than smoothed over. `AutoLockResult`
+distinguishes "it failed and everything was put back" from "it failed and something is still
+half-configured", and lists what could not be undone. The two call for different reactions from
+the user, so they are not flattened into one boolean.
+
+`Disable` and `Cleanup` work the other way round: there is nothing to roll back to, because the
+safest reachable state is always "manual and clean". Every step is attempted even if an earlier
+one fails, and residue is reported.
+
+`Reconcile` runs when the setup window opens. State drifts for ordinary reasons - the watcher was
+killed in Task Manager, a cleanup tool removed the startup entry, a crash left a stale signal - and
+repairing it there means the window shows a working machine instead of a puzzle. If automatic mode
+cannot be restored, it converges to manual and clean rather than leaving the machine in between.
+
+## Diagnostics: everything the user chooses to share, nothing else
+
+`SelfTest` is deliberately free of any UI, so every path - including the awkward ones - is driven
+from tests with fakes. It reads the environment, the power configuration and AFKLocker's own
+state, optionally exercises the watcher handshake, and returns a report.
+
+The rule that shapes the whole design: **a bundle is meant to be sent to a stranger.** So:
+
+- Every path goes through `PathRedactor` before it reaches the report. Known folders become
+  `%LOCALAPPDATA%` and friends; the user name is removed wherever it appears; and a path outside
+  every known folder is reduced to its file name, because a folder named after a person or a
+  client is exactly the kind of thing that would otherwise survive.
+- A **custom power plan's name is never reported** - only that it is custom. Users rename those,
+  sometimes after themselves.
+- Manufacturer and model are opt-in and default to off.
+- Nothing enumerates processes, installed programs, network adapters or environment variables, and
+  no registry is read outside two well-known version keys and AFKLocker's own values.
+
+The self-test restores what it touches: if automatic mode was on before, it is on afterwards. A
+diagnostic that left the machine worse than it found it would be worse than no diagnostic.
+
+The privacy check in the test suite searches the exported bundle for *shapes* of personal data -
+MAC addresses, IPs, emails, un-redacted profile paths - rather than for topic words, because the
+privacy notice itself mentions "IP or MAC addresses" while promising not to include any. It is
+written as a search for what must not be there, so that data added carelessly later is caught.
+
 ## Lid events: the window is not message-only
 
 The watcher owns a hidden window and registers it with

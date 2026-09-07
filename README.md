@@ -90,9 +90,15 @@ The part that makes closed-lid work possible is not the lock. It's the power con
    running because Windows is configured to, not because something is holding it awake.
 
 The screen going dark is handled by the hardware: closing the lid physically turns the panel and
-keyboard backlight off. AFKLocker deliberately does *not* try to blank the display in software at
-lock time - the Windows lock screen turns the monitor back on by itself, so that approach fights
-the OS and loses. Closing the lid is the reliable way to get a dark screen.
+keyboard backlight off. **Manual mode does not try to blank the display in software**, because
+doing it *before* the lock loses - the Windows lock screen turns the monitor straight back on.
+Closing the lid is the reliable way to get a dark screen.
+
+The exception is an external monitor, which no lid can turn off. There, closing the lid makes
+Windows reconfigure the displays and wake the external screen, leaving a lit lock screen behind on
+a desk you have walked away from. So in **automatic mode**, where AFKLocker is the thing doing the
+locking and knows exactly when it happened, it asks for display-off immediately afterwards -
+which works, because by then the lock screen already exists.
 
 ## Quick start
 
@@ -116,6 +122,28 @@ current user by default, so it does not need administrator rights.
 > "Windows protected your PC" on first run. You can click **More info → Run anyway**, or build
 > from source (see below) if you'd rather not trust a binary you didn't compile. This is stated
 > plainly here because you deserve to know before you download, not after.
+
+### Verifying what you downloaded
+
+There is no code signing certificate, but you do not have to take the download on trust. Every
+release is published with **build provenance attestation**, which ties the exact bytes to the
+workflow run, repository and commit that produced them - something a certificate does not tell you
+at all.
+
+```powershell
+# Proves this file was built by this repository's release workflow
+gh attestation verify AFKLocker-0.4.0-setup.exe --repo augbastos/AFKLocker
+```
+
+Or check the hash against `SHA256SUMS.txt` from the release:
+
+```powershell
+Get-FileHash AFKLocker-0.4.0-setup.exe -Algorithm SHA256
+```
+
+Both are free, and both are stronger than "the installer looked official". The source is here, the
+workflow that built it is here, and the attestation connects the two to the file in your downloads
+folder.
 
 ## Setup
 
@@ -177,6 +205,11 @@ still running, in the same session, exactly where it was.
 
 Turn it off and the watcher stops, the sign-in entry is removed, and nothing of AFKLocker is
 resident again. Uninstalling does the same, without asking.
+
+**With an external monitor**, closing the lid makes Windows move everything to the external
+screen. In automatic mode AFKLocker turns the displays off after locking, so you are not left with
+a lit lock screen on a desk you have walked away from. In manual mode the screens follow Windows'
+own "console lock display off timeout", which you can shorten in Advanced power settings.
 
 **Two details worth knowing:**
 
@@ -313,11 +346,54 @@ Specific to automatic mode:
   utility puts the machine to sleep when the lid closes, AFKLocker will lock it first and Windows
   will sleep it anyway.
 
+## Diagnostics
+
+**AFKLocker collects no telemetry and sends nothing automatically.** There is no server, no
+account and no background reporting. What follows only happens when you press a button.
+
+If something does not work, **AFKLocker Setup → Diagnostics** runs a self-test and tells you what
+this machine can and cannot do: whether Windows reports a lid, whether the power settings allow
+closed-lid operation, whether the watcher starts and reaches READY, and whether the saved
+configuration matches reality.
+
+Two of the checks are optional because they touch the running system:
+
+- **Test the watcher** starts one, confirms the handshake, stops it, and puts the previous state
+  back. If automatic mode was on, it stays on.
+- **Test lid detection** asks you to close and open the lid, and reports what Windows delivered.
+  **It never locks your session** - it only listens.
+
+**Export diagnostics** writes a zip you can attach to an issue:
+
+```
+AFKLocker-Diagnostics-20260907-104500.zip
+├── summary.txt        the report, readable by a person
+├── diagnostics.json   the same facts, structured, with a schema version
+└── self-test.txt      the check-by-check output
+```
+
+**What it contains:** Windows version and build, architecture, whether the machine reports a lid
+and a battery, Modern Standby and S3 support, the power plan type, the specific power settings
+AFKLocker reads, AFKLocker's own mode and state, and the results of the tests you ran.
+
+**What it does not contain:** your username or computer name, IP or MAC addresses, Wi-Fi networks,
+your files, installed programs, running processes, environment variables, or registry values
+outside AFKLocker's own. Paths are replaced with placeholders - `%LOCALAPPDATA%\AFKLocker\` rather
+than a folder with your name in it - and a path outside the known folders is reduced to just its
+file name.
+
+Manufacturer and model are **off by default**. They would help build a picture of which laptops
+work, but that is information about your hardware and yours to volunteer, so there is a tick box
+and it starts unticked.
+
+You are shown exactly what the report says before it is saved, and the file is yours to read
+before deciding whether to share it.
+
 ## Privacy
 
 AFKLocker makes **no network requests of any kind**. No telemetry, no analytics, no update check,
 no accounts, no cloud anything. That is unchanged by automatic mode: the watcher opens no sockets
-either.
+either, and the diagnostics bundle is written to disk and never transmitted.
 
 Everything it touches is local: Windows power settings, backup and settings files under
 `%LOCALAPPDATA%\AFKLocker\`, one registry value under `HKCU\...\CurrentVersion\Run` when automatic
