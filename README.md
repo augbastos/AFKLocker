@@ -6,12 +6,15 @@
 
 **Lock your PC. Close the lid. Keep it running.**
 
-AFKLocker is a small Windows utility for people who need their laptop to keep working while
-they're away. It prepares Windows for closed-lid operation and gives you a one-action way to
-lock the session before you leave.
+A small Windows utility for people who need the laptop to keep working while they are away.
 
 [![Build](https://github.com/augbastos/AFKLocker/actions/workflows/ci.yml/badge.svg)](https://github.com/augbastos/AFKLocker/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+**[Download](https://github.com/augbastos/AFKLocker/releases/latest)** ·
+[Architecture](docs/architecture.md) ·
+[Security](SECURITY.md) ·
+[Changelog](CHANGELOG.md)
 
 <img src="assets/flow.svg" alt="Double-click AFKLocker, Windows locks, close the lid, everything keeps running" width="880">
 
@@ -19,521 +22,163 @@ lock the session before you leave.
 
 ---
 
-## Three ways to lock
+## Why
 
-**Manual** — the default. Nothing of AFKLocker stays running once you sign back in.
+You have a build, a download, a local server or an AI agent running, and you need to leave.
+Closing the lid normally suspends the machine, so you either leave it open or you stop working.
 
-```
-Double-click AFKLocker
-        ↓
-Windows locks, screens go dark
-        ↓
-Close the lid
-        ↓
-Work keeps running
-```
-
-**Global hotkey** — opt-in. One key combination, anywhere, without reaching for the mouse.
-
-```
-Press your hotkey
-        ↓
-Windows locks, screens go dark
-        ↓
-Close the lid
-        ↓
-Work keeps running
-```
-
-**Automatic** — opt-in. Closing the lid is itself the instruction to lock.
-
-```
-Close the lid
-        ↓
-AFKLocker locks Windows
-        ↓
-Work keeps running
-```
-
-Manual remains the default because AFKLocker does not need to stay resident to do its job. The
-other two are for people who move between places often; you turn them on in AFKLocker Setup, and
-neither is enabled by installing.
-
-### About the hotkey
-
-You choose the keys — AFKLocker does not pick one for you and does not ship a default. Click the
-box in Setup and press what you want. The **Menu** key, the one next to the right `Ctrl` on many
-keyboards, works on its own and is a good candidate precisely because almost nothing else uses it;
-so do combinations like `Ctrl` + `Alt` + `L`.
-
-**AFKLocker does not monitor what you type.** The hotkey is a reservation, not a keyboard watcher:
-AFKLocker asks Windows to be told when that one combination is pressed, and Windows tells it only
-that. No other keystroke reaches the program, and none is recorded anywhere — including in the
-diagnostics bundle, which reports the key you *chose* and nothing about keys you press.
-
-If another program already owns the combination, Setup says so when you pick it rather than
-failing quietly later. Some combinations belong to Windows itself — `Win` + `L`, `Ctrl` + `Esc`,
-`Alt` + `Tab`, F12 — and it will refuse those the same way.
-
-Turning the hotkey on starts a small background helper, because something has to be waiting for
-the key. It is the same helper automatic mode uses, so switching both on does not run two of them.
-
-### What stays running
-
-| Automatic | Global hotkey | Background helper |
-|---|---|---|
-| off | off | **none** |
-| off | on | runs, for the hotkey |
-| on | off | runs, for the lid |
-| on | on | one process, both jobs |
-
-Turning one off never stops a helper the other still needs.
-
----
-
-## Why AFKLocker
-
-Closing a laptop lid normally means "stop". That is the right default for most people and the
-wrong one if the machine is doing something.
-
-If you leave a build, a download, a local server, an SSH session, a long sync or an agent
-running, walking away has three bad options: leave the machine unlocked, let it go to sleep, or
-learn Windows power configuration well enough to change the defaults safely. Windows can be told
-to keep running with the lid closed, but the settings are spread across several pages, they are
-easy to get half-right, and nothing tells you whether you actually got it right.
-
-AFKLocker is that missing piece:
-
-- **It checks.** One window tells you whether Windows will really keep this machine running with
-  the lid closed, or which setting would still suspend it.
-- **It configures.** With your confirmation, and remembering the previous values so you can undo it.
-- **It locks.** Double-click, the session locks, done. No window, no prompt, no timer.
-
-The daily experience is a single double-click. Everything else is one-time setup.
-
-## How it works
-
-There are two separate things people confuse:
-
-| | What it does | What happens to your work |
-|---|---|---|
-| **Locking the session** | Shows the lock screen, requires your password to return | Everything keeps running |
-| **Sleep / suspend** | Powers down the machine to a low-power state | Everything stops |
-
-AFKLocker wants the first and avoids the second. It calls `LockWorkStation` - and nothing else
-at that moment. No processes are paused, no services stopped, no network connections dropped.
-
-The part that makes closed-lid work possible is not the lock. It's the power configuration:
-
-1. **Lid close action = Do nothing**, so shutting the laptop doesn't suspend it.
-2. **System sleep timeout = Never**, so idling doesn't suspend it either.
-3. **Nothing stays resident while you are working.** The machine keeps running because Windows is
-   configured to, not because something is holding it awake. AFKLocker holds no execution state
-   and starts no service. What does live while the machine is *locked* is described below.
-
-### Turning the screens off
-
-Locking does not darken a screen, and Windows cannot be relied on to do it either. There is a
-hidden setting for it — the *console lock display off timeout*, sixty seconds by default — and on
-some machines it never fires at all: measured on the development machine, the lock screen sat lit
-with no input for minutes, and Windows reported no display change whatsoever.
-
-So AFKLocker asks for display-off itself, right after locking. That request puts the panel into
-standby rather than painting it black, which is the difference between a monitor that is off and
-one that is merely dark.
-
-**One request is not enough, for two reasons.** Closing the lid makes Windows reconfigure the
-displays, and that reconfiguration lights an external monitor back up *after* the lock. And
-Windows **ignores a display-off request while there has been recent user input** — it returns
-success and does nothing. AFKLocker asks about a second after the click that locked the machine,
-so the first request is very often discarded. Measured: with 94 seconds of idle, the same request
-took effect in 200 milliseconds.
-
-The answer is not a cleverer request, it is patience. AFKLocker keeps asking, roughly every five
-seconds while the screen is still lit, **for as long as the session stays locked**. The first
-attempt after you actually walk away is the one that lands.
-
-Knowing when to *stop* is the harder half, because a program that insists would blank the screen
-of someone standing at the machine typing their password. In normal use one thing ends it:
-
-- **the session is unlocked.** Then the guard stops and the process exits.
-
-Everything else only changes how long it waits — including the twelve-hour backstop, which exists
-for a session that somehow never reports being unlocked and should never be reached:
-
-| What happens | What AFKLocker does |
-|---|---|
-| A key is pressed or the mouse moves | leaves the screen alone for 90 seconds, restarted by every further touch |
-| The lid is opened | the same 90-second pause |
-| Something else keeps the display on | slows down to one attempt every few seconds, and keeps going |
-| Twelve hours pass | gives up, as a backstop against a session that never reports being unlocked |
-
-Opening a lid or nudging a mouse and then walking away *without* signing in used to leave the
-screen lit for the rest of the night. It no longer does: those are reasons to wait, not to give
-up.
-
-This means `AFKLocker.exe` stays alive while your session is locked, and exits when you sign back
-in. It still holds no execution state and keeps nothing awake — and failing to darken a screen
-never affects the lock, which has already happened by then.
+Windows can be configured not to suspend, but the settings are scattered across Control Panel,
+easy to get half-right, and nothing tells you whether you got it right. AFKLocker checks them,
+fixes them if you agree, and gives you a one-action way to lock before you go.
 
 ## Quick start
 
-1. Download the installer from [Releases](https://github.com/augbastos/AFKLocker/releases).
+1. Download from [Releases](https://github.com/augbastos/AFKLocker/releases/latest) — installer,
+   or a portable zip if you would rather not install anything.
 2. Run it. You get an **AFKLocker** shortcut on your desktop.
-3. Open **AFKLocker Setup** and check the readiness list. Apply the configuration if it asks you to.
+3. Open **AFKLocker Setup**, check the readiness list, apply the configuration if it asks.
 4. From then on: **double-click AFKLocker**, close the lid, walk away.
 
-## Installation
+> **SmartScreen will warn on first run.** The binaries are not code-signed — a certificate is a
+> recurring cost this project does not have. Click **More info → Run anyway**, or verify the
+> download first:
+>
+> ```powershell
+> # proves these bytes came from this repository's release workflow
+> gh attestation verify AFKLocker-<version>-setup.exe --repo augbastos/AFKLocker
+> ```
+>
+> Or check the hash against `SHA256SUMS.txt` from the release.
+> Details in [docs/signing.md](docs/signing.md).
 
-**Installer (recommended)** - grab `AFKLocker-<version>-setup.exe` from the
-[latest release](https://github.com/augbastos/AFKLocker/releases/latest). It installs for the
-current user by default, so it does not need administrator rights.
+## Three ways to lock
 
-**Portable** - the release also contains a zip with the three binaries. Unzip anywhere and run
-`AFKLocker.exe`. You create your own shortcut; nothing is written outside
-`%LOCALAPPDATA%\AFKLocker`, and that only appears once you let Setup change a power setting.
+| | How | Running while you work? |
+|---|---|---|
+| **Manual** *(default)* | Double-click the icon | Nothing |
+| **Global hotkey** *(opt-in)* | Press a key you choose | A small helper, waiting for the key |
+| **Automatic** *(opt-in)* | Close the lid | A small helper, waiting for the lid |
 
-> **About the SmartScreen warning:** the binaries are not code-signed - a code signing certificate
-> is a recurring cost this project does not have. Windows SmartScreen will therefore show
-> "Windows protected your PC" on first run. You can click **More info → Run anyway**, or build
-> from source (see below) if you'd rather not trust a binary you didn't compile. This is stated
-> plainly here because you deserve to know before you download, not after.
+All three do the same thing: lock the session and put the screens out. Both opt-in modes are off
+until you switch them on in Setup, and they share one helper — switching both on does not run two
+of them. Turning one off leaves the helper running if the other still needs it.
 
-### Verifying what you downloaded
+Whichever mode you use, AFKLocker stays alive **while the session is locked** to look after the
+screens, and exits when you sign in.
 
-There is no code signing certificate, but you do not have to take the download on trust. Every
-release is published with **build provenance attestation**, which ties the exact bytes to the
-workflow run, repository and commit that produced them - something a certificate does not tell you
-at all.
+**Opening the lid never unlocks anything.** You sign in normally, every time.
 
-```powershell
-# Proves this file was built by this repository's release workflow
-gh attestation verify AFKLocker-<version>-setup.exe --repo augbastos/AFKLocker
-```
+### The hotkey is not a keyboard watcher
 
-Or check the hash against `SHA256SUMS.txt` from the release:
+You pick the keys — AFKLocker ships no default. The **Menu** key, next to the right `Ctrl` on many
+keyboards, works on its own and is a good candidate because almost nothing else uses it.
 
-```powershell
-Get-FileHash AFKLocker-<version>-setup.exe -Algorithm SHA256
-```
+AFKLocker asks Windows to be told when that one combination is pressed, and Windows tells it only
+that. **No other keystroke reaches the program**, and none is recorded anywhere. If another
+program already owns a combination, Setup says so while you are choosing it.
 
-Both are free, and both are stronger than "the installer looked official". The source is here, the
-workflow that built it is here, and the attestation connects the two to the file in your downloads
-folder.
+### The screens
 
-## Setup
+Locking does not darken a screen on its own, and on some machines Windows never darkens the lock
+screen at all. So AFKLocker asks for display-off after locking, and keeps asking, because Windows
+ignores the request while there has been recent input — which is exactly when you have just
+clicked.
 
-`AFKLocker Setup` reads your active power plan and reports one line per thing that matters:
+It gives up when you sign back in, and after twelve hours as a backstop. If you open the lid or
+use the keyboard once the screen has gone dark, it stands off for 90 seconds and starts that
+again on every further touch, so it will not darken a screen you are working at.
 
-<div align="center">
-  <img src="assets/screenshot-setup.png" alt="AFKLocker Setup showing lid close and system sleep as Ready, hibernation as not applicable, battery behaviour as optional, and an overall verdict of Ready for AFKLocker" width="560">
-</div>
+It keeps nothing awake — that is the power configuration's job.
 
-If something needs changing, the button tells you exactly what it will do before it does it. If
-nothing needs changing, the button says **Nothing to change** and stays disabled - AFKLocker does
-not rewrite settings that are already correct.
-
-**Battery is opt-in and off by default.** Keeping a laptop awake with the lid closed on battery
-drains it and can overheat it. Setup will report what your battery settings do, but it will not
-change them unless you tick the box.
-
-## Usage
-
-| Action | What happens |
-|---|---|
-| Double-click **AFKLocker** | The session locks immediately. No window appears. |
-| Right-click **AFKLocker** → *AFKLocker Setup* | Opens the settings window from the desktop icon. |
-| `AFKLocker.exe --display-off` | Turns the display off without locking. Any key or mouse move brings it back. |
-| **AFKLocker Setup** | Readiness, lock behaviour, restore. Also in the Start menu. |
-
-> On Windows 11 the right-click entry lives in the full context menu — the one behind
-> **Show more options** — unless you have the classic menu enabled. Getting into the compact
-> Windows 11 menu requires a signed MSIX package, which this project cannot produce.
-
-The `--display-off` shortcut is optional at install time (unticked by default). It is useful on a
-desktop, or when you want the screen off but are staying at the machine.
-
-## Automatic lid lock
-
-Switch **Lock behaviour** to **Automatic** in Setup and closing the lid locks Windows by itself.
-
-Here is the case it exists for. You are working somewhere public — a library, a café, a shared
-office. A build is running, or a download, or a server, or an agent. You shut the laptop, walk to
-another room, and open it again: Windows asks for your PIN, and everything you left running is
-still running, in the same session, exactly where it was.
-
-**What turning it on actually does:**
-
-- A small process, `AFKLockerWatcher.exe`, starts when you sign in. It has no window, no tray
-  icon and no console.
-- It asks Windows to tell it when the lid moves (`GUID_LIDSWITCH_STATE_CHANGE`) and then sleeps.
-  There is no polling: it is blocked in a message loop until Windows posts an event. Idle, it
-  holds around 5 MB and uses no measurable CPU.
-- When the lid closes, it calls `LockWorkStation`. That is the entire job.
-
-**What it deliberately does not do:**
-
-- **It never unlocks.** Opening the lid leaves Windows on the lock screen. Every time.
-- **It does not touch power settings** and does not keep the machine awake by itself. Staying
-  awake with the lid shut is the job of the settings above; these are two separate things, and
-  Setup shows them separately for that reason.
-- **It does not watch what you are running**, or care when it finishes.
-
-Turn it off and the helper stops, the sign-in entry is removed, and nothing of AFKLocker is
-resident again — **unless the global hotkey is still on**, in which case the helper stays, because
-it is still the thing waiting for the key. Turning off the last feature that needs it is what
-removes it. Uninstalling removes it either way, without asking.
-
-**With an external monitor**, closing the lid makes Windows move everything to the external
-screen. Both modes then hold the displays off the same way, described in
-[Turning the screens off](#turning-the-screens-off), so you are not left with a lit lock screen on
-a desk you have walked away from.
-
-**Two details worth knowing:**
-
-- The first lid event after the watcher starts is treated as a starting position, not a change,
-  so it never locks on its own. This matters if you work with the laptop docked and shut on an
-  external monitor — starting the watcher there will not lock you out.
-- Automatic lock works regardless of your battery settings, but if Windows is still set to sleep
-  when the lid closes on battery, it will lock and *then* sleep. Setup says so when that applies.
-
-For diagnostics: `AFKLockerWatcher.exe --status` reports the lock mode, the hotkey, which features
-need the helper, whether one is running, and what the sign-in entry actually points at; `--stop`
-asks a running one to exit.
-
-## Power settings AFKLocker changes
+## What it changes on your machine
 
 Only these, only on the active power plan, and only after you confirm:
 
-| Setting | Windows GUID | Set to | When |
-|---|---|---|---|
-| Lid close action (AC) | `5ca83367-…` | Do nothing | Always |
-| System sleep timeout (AC) | `29f6c1db-…` | Never | Always |
-| Hibernate timeout (AC) | `9d7815a6-…` | Never | Only if hibernation is enabled |
-| Lid close action (DC) | `5ca83367-…` | Do nothing | Only if you tick "also on battery" |
-| System sleep timeout (DC) | `29f6c1db-…` | Never | Only if you tick "also on battery" |
-| Hibernate timeout (DC) | `9d7815a6-…` | Never | Only if you tick "also on battery" |
+| Setting | Set to | When |
+|---|---|---|
+| Lid close action (plugged in) | Do nothing | Always |
+| System sleep timeout (plugged in) | Never | Always |
+| Hibernate timeout (plugged in) | Never | Only if hibernation is enabled |
+| The same three on battery | — | Only if you tick "also on battery" |
 
-**No display timeout is ever written.** AFKLocker keeps the *system* awake, not the *screen*, and
-it does not change how long Windows waits before darkening a monitor. Asking a display to turn
-off right now, which it does after locking, is a request - not a saved setting, and nothing to
-restore afterwards.
+**Battery is off by default**, because keeping a machine awake with the lid shut on battery drains
+it and can overheat it in a bag. The trade-off: if you use Automatic mode unplugged without
+ticking battery, closing the lid will lock and *then* let Windows sleep. Setup says so when that
+applies to you.
 
-**The automatic-lock watcher changes none of these.** It only locks. Whether the machine keeps
-running with the lid shut is decided entirely by the table above, in both modes.
+Display timeouts are never written. AFKLocker keeps the *system* awake, not the *screen*.
 
-Settings are read and written through the documented `powrprof.dll` power scheme API
-(`PowerReadACValueIndex`, `PowerWriteACValueIndex`, `PowerSetActiveScheme`), not by parsing
-`powercfg.exe` output - that output is localized, so parsing it breaks on every non-English
-Windows.
+The previous values are backed up in plain text under `%LOCALAPPDATA%\AFKLocker` before anything
+is changed. If a change fails partway, AFKLocker puts back the ones that already happened — and
+if it cannot, it tells you exactly what is still changed instead of reporting a clean failure.
 
-## Restore and uninstall
+**Restore:** AFKLocker Setup → **Restore previous**. Uninstalling always attempts to remove the
+helper and its startup entry, whether or not you restore the settings, and tells you if it could
+not.
 
-Before changing anything, AFKLocker writes the previous values to a plain-text file in
-`%LOCALAPPDATA%\AFKLocker\`, one file per power plan:
+## ⚠️ Safety
 
-```
-# AFKLocker power settings backup
-version=1
-scheme=8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
-scheme-name=High performance
-lid-ac=1
-sleep-ac=1800
-```
+**Never leave a running, lid-closed laptop in a bag, sleeve, drawer or backpack.** AFKLocker's
+whole purpose is to stop the machine sleeping when you shut it, which means it keeps generating
+heat with its vents against fabric. Setup says this too, before you turn anything on.
 
-You can read it, and so can anyone troubleshooting your machine.
-
-- **Restore previous** in AFKLocker Setup puts those values back and removes the backup.
-- **Uninstalling** asks whether you want them restored first. Say no and the machine stays
-  configured for closed-lid operation - a perfectly reasonable thing to want.
-
-Two details that matter:
-
-- Running Setup twice never overwrites the original backup. The first recorded value is the one
-  that predates AFKLocker, and that's the one restore uses.
-- Restore targets the power plan the backup came from, not whichever plan happens to be active
-  now. Switching plans between configure and uninstall doesn't confuse it.
-
-## Safety
-
-**Never leave a running, lid-closed laptop inside a bag, sleeve, drawer, backpack or any other
-poorly ventilated enclosure.** A machine that isn't sleeping is still generating heat, and a
-closed space traps it. This is the one rule to take seriously, and automatic mode makes it matter
-more: when lid-close means "lock", it stops being a deliberate decision to leave the machine
-running, and starts being a habit.
-
-|  | |
-|---|---|
-| **Fine** | Closed on a desk. Carried briefly in open air. Under your arm with the vents clear. |
-| **Don't** | Closed inside a backpack or padded sleeve while a build runs. Any confined space. Anything that blocks the vents. |
-
-This is not a guarantee about your particular hardware. Thermal behaviour varies by model,
-ambient temperature and workload; when in doubt, be conservative and let the machine sleep.
-
-Also worth knowing:
-
-- **Battery drain.** On battery, keeping the system awake will flatten it, and a machine that dies
-  mid-task loses whatever wasn't saved. This is why battery configuration is opt-in.
-- **Thermals.** A laptop running a build with the lid closed on a soft surface that blocks its
-  vents will throttle, and may shut down to protect itself.
-- **Physical security.** A locked session is a real barrier, but a machine left running in a public
-  space is still a machine left in a public space.
-- **OEM software can override you.** Some vendor power utilities re-apply their own settings, and
-  managed machines may have Group Policy that blocks changes entirely. If AFKLocker's checks say
-  Ready but the machine still sleeps, suspect that first.
-
-## Compatibility
-
-- **Windows 10 and Windows 11.** Windows 8.1 should work; it hasn't been tried.
-- Requires **.NET Framework 4.8**, which ships with Windows 10 (1903+) and Windows 11. There is no
-  runtime to install.
-- **Physically tested on one machine only.** Everything else is covered by unit tests against
-  simulated machines, not by hardware.
-
-That's the honest scope. It's a small utility that talks to a well-documented Windows API, so it
-should behave the same elsewhere - but "should" is not "was tested", and this README isn't going
-to pretend otherwise.
-
-## Limitations
-
-- **Modern Standby (S0 low power idle) machines are a known gap.** On these, the classic sleep
-  timeouts are not the whole story and the system can still drop into a low-power state with the
-  lid closed. AFKLocker detects Modern Standby and says so instead of promising it will work.
-- **Some firmware reports no lid at all.** `SYSTEM_POWER_CAPABILITIES.LidPresent` comes back false
-  on machines that obviously have one - including the laptop this was built on. AFKLocker
-  therefore keys its checks off the presence of the lid close *setting*, not that flag.
-- **Group Policy wins.** On a managed machine, writes may be refused. Setup reports that clearly
-  and offers to retry elevated, but it cannot overrule policy.
-- **It doesn't watch anything.** AFKLocker has no idea what you're running, when it finishes, or
-  whether you came back. It configures the machine and locks the session. That's the whole product.
-
-Specific to automatic mode:
-
-- **Automatic lock needs a machine that reports lid events.** Windows only delivers them "until a
-  lid device is found and its current state is known" - so on a desktop, or a machine whose lid
-  device is disabled, nothing will ever fire. Setup detects this and says so, because the failure
-  is otherwise invisible: the watcher reports itself as perfectly healthy and simply never does
-  anything.
-
-  The usual cause on a laptop is the **ACPI Lid** device being disabled in Device Manager (under
-  *System devices*). Disabling it is an old trick for stopping a laptop sleeping when the lid
-  closes - which AFKLocker makes unnecessary, since it configures the lid action properly instead.
-  Enabling it again is safe once the lid action is "Do nothing", and it is what makes automatic
-  lock possible.
-- **The watcher lives in your session.** It starts at sign-in and ends at sign-out. It does not
-  run at the lock screen before you have signed in, and it does not cover other users - each
-  signed-in user gets their own, or none.
-- **Automatic mode does not make an unsupported machine work.** If Modern Standby or an OEM
-  utility puts the machine to sleep when the lid closes, AFKLocker will lock it first and Windows
-  will sleep it anyway.
-
-## Diagnostics
-
-**AFKLocker collects no telemetry and sends nothing automatically.** There is no server, no
-account and no background reporting. What follows only happens when you press a button.
-
-If something does not work, **AFKLocker Setup → Diagnostics** runs a self-test and tells you what
-this machine can and cannot do: whether Windows reports a lid, whether the power settings allow
-closed-lid operation, whether the helper starts and reaches READY, whether Windows will accept
-your hotkey, whether the sign-in entry points at *this* installation, and whether the saved
-configuration matches reality.
-
-The autostart check reports one of:
-
-```
-Autostart: PASS — points to current AFKLocker helper
-Autostart: FAIL — entry points to a different location
-```
-
-The second one is not hypothetical: an entry left behind by an older install has the same file
-name, satisfies a "does this mention AFKLockerWatcher.exe" check, and starts nothing.
-
-Two of the checks are optional because they touch the running system:
-
-- **Test the helper** starts one, confirms the handshake, stops it, and puts the previous state
-  back. If automatic mode or the hotkey was on, it stays on.
-- **Test lid detection** asks you to close and open the lid, and reports what Windows delivered.
-  **It never locks your session** - it only listens.
-
-**Export diagnostics** writes a zip you can attach to an issue:
-
-```
-AFKLocker-Diagnostics-20260907-104500.zip
-├── summary.txt        the report, readable by a person
-├── diagnostics.json   the same facts, structured, with a schema version
-└── self-test.txt      the check-by-check output
-```
-
-**What it contains:** Windows version and build, architecture, whether the machine reports a lid
-and a battery, Modern Standby and S3 support, the power plan type, the specific power settings
-AFKLocker reads, AFKLocker's own mode and state, and the results of the tests you ran.
-
-It also reports the hotkey **you chose** and whether Windows accepts it — for example
-`Hotkey: Menu` and `Hotkey registration: PASS`.
-
-**What it does not contain:** your username or computer name, IP or MAC addresses, Wi-Fi networks,
-your files, installed programs, running processes, environment variables, or registry values
-outside AFKLocker's own. Paths are replaced with placeholders - `%LOCALAPPDATA%\AFKLocker\` rather
-than a folder with your name in it - and a path outside the known folders is reduced to just its
-file name.
-
-**And no keyboard activity of any kind.** Not the keys you press, not when you pressed them, not
-how many. The bundle reports the combination you configured, which is a setting, and nothing about
-the keyboard, which would be surveillance. AFKLocker cannot report what it never sees.
-
-Manufacturer and model are **off by default**. They would help build a picture of which laptops
-work, but that is information about your hardware and yours to volunteer, so there is a tick box
-and it starts unticked.
-
-You are shown exactly what the report says before it is saved, and the file is yours to read
-before deciding whether to share it.
+A locked machine is still a running machine. AFKLocker locks a session; it does not defend against
+someone with physical access.
 
 ## Privacy
 
-AFKLocker makes **no network requests of any kind**. No telemetry, no analytics, no update check,
-no accounts, no cloud anything. That is unchanged by automatic mode: the watcher opens no sockets
-either, and the diagnostics bundle is written to disk and never transmitted.
+**No network access of any kind.** No telemetry, no analytics, no update check, no server, no
+account. Nothing about your machine leaves it.
 
-Everything it touches is local: Windows power settings, backup and settings files under
-`%LOCALAPPDATA%\AFKLocker\`, one registry value under `HKCU\...\CurrentVersion\Run` when automatic
-mode is on, and `LockWorkStation`.
+**No keyboard monitoring.** The hotkey is a registration, not a watcher — see above.
 
-You do not have to take that on faith. The logic is a handful of readable source files, and the
-repository's own integration test checks the running watcher for open TCP/UDP handles and power
-requests rather than just asserting there are none.
+If something does not work, **AFKLocker Setup → Diagnostics** runs a self-test and can export a
+zip you can attach to an issue. It is written to disk and never transmitted, and it deliberately
+excludes your username, computer name, network addresses, files, installed programs and
+processes. Paths become placeholders. Manufacturer and model are opt-in and start unticked.
+
+## Compatibility and limitations
+
+- **Windows 10 (1903+) and Windows 11**, x64. Needs .NET Framework 4.8, which both already have.
+  The installer will run on Windows 8.1, but that has not been tested and 4.8 is not there by
+  default.
+- No administrator rights needed, unless Windows refuses a power setting — then Setup offers to
+  elevate and tells you why.
+- **No code signing.** SmartScreen warns; the attestation above is what exists instead.
+- **Physically tested on one machine.** Everything else is covered by tests against simulated
+  ones — which is why the diagnostics export exists.
+- **Modern Standby (S0 low power idle) is a known gap.** Those machines do not use the classic
+  sleep settings AFKLocker configures, so closed-lid behaviour is up to the firmware. Setup
+  detects Modern Standby and says so rather than promising it will work.
+- **OEM utilities and Group Policy can override you.** Vendor power software may re-apply its own
+  settings, and a managed machine may refuse the changes outright. Setup reports what Windows
+  actually says, so re-check the readiness list if you suspect this.
+- **Automatic mode needs a machine that reports lid events.** Some laptops have the ACPI Lid
+  device disabled, often deliberately to stop them sleeping. Setup detects that and says so,
+  because otherwise the helper looks perfectly healthy and simply never fires.
 
 ## Building from source
 
-No SDK to install: AFKLocker compiles with the C# compiler that ships with the .NET Framework, so
-a clean Windows machine can build it as-is.
+Needs only Windows. No SDK, no NuGet, no package restore.
 
 ```powershell
 git clone https://github.com/augbastos/AFKLocker.git
 cd AFKLocker
-pwsh -File tools/Build.ps1 -Test
+.\tools\Build.ps1 -Test
 ```
 
-Output lands in `build/`. Useful switches:
+## More
 
-```powershell
-pwsh -File tools/Build.ps1 -Test -Installer   # also build the installer (needs Inno Setup 6)
-pwsh -File tools/Build-Icon.ps1               # regenerate the icon assets from their vector source
-```
+- [Architecture and design decisions](docs/architecture.md) — how it works, and why it is built
+  this way
+- [Security and privacy](SECURITY.md) — reporting a vulnerability, and what the program does not do
+- [Changelog](CHANGELOG.md)
+- [Code signing](docs/signing.md)
+- [Releases](https://github.com/augbastos/AFKLocker/releases)
 
-Two integration scripts are kept out of CI because they touch the real machine, and are worth
-running by hand after changing anything they cover:
-
-```powershell
-pwsh -File tools/Test-Integration.ps1           # applies and restores power settings, on a throwaway power plan
-pwsh -File tools/Test-AutoLock-Integration.ps1  # turns automatic lock on and off for real, then puts it back
-```
-
-The build treats compiler warnings as errors, and `tools/Build-Icon.ps1` regenerates every icon
-size from one geometric definition, so the assets in `assets/` are reproducible rather than
-hand-drawn artefacts.
-
-See [docs/architecture.md](docs/architecture.md) for why it's built this way.
+Something not working? **AFKLocker Setup → Diagnostics → Export diagnostics** produces a file you
+can attach to an [issue](https://github.com/augbastos/AFKLocker/issues).
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
