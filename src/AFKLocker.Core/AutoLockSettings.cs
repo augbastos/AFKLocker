@@ -13,15 +13,56 @@ namespace AFKLocker.Core
     /// </summary>
     public sealed class AutoLockSettings
     {
-        public const int CurrentVersion = 1;
+        public const int CurrentVersion = 2;
 
         public LockMode Mode { get; set; }
 
+        /// <summary>Whether a global hotkey should lock the session.</summary>
+        public bool HotkeyEnabled { get; set; }
+
+        /// <summary>The chosen combination. Never null; empty means nothing chosen.</summary>
+        public HotkeyBinding Hotkey { get; set; }
+
         public AutoLockSettings()
         {
-            // Manual is the default and stays the default. A machine with no
-            // settings file behaves exactly like AFKLocker 0.1.x.
+            // Manual with no hotkey is the default and stays the default. A
+            // machine with no settings file - or with a 0.4.x settings file that
+            // predates the hotkey - behaves exactly like AFKLocker 0.1.x: nothing
+            // resident, nothing registered.
             Mode = LockMode.Manual;
+            HotkeyEnabled = false;
+            Hotkey = HotkeyBinding.Empty;
+        }
+
+        /// <summary>A copy, so callers can change one field without touching the stored object.</summary>
+        public AutoLockSettings Clone()
+        {
+            return new AutoLockSettings
+            {
+                Mode = Mode,
+                HotkeyEnabled = HotkeyEnabled,
+                Hotkey = Hotkey ?? HotkeyBinding.Empty
+            };
+        }
+
+        /// <summary>
+        /// What the background helper would have to do for these settings.
+        /// This, not the lock mode, is what decides whether a helper exists.
+        /// </summary>
+        public HelperFeatures RequiredFeatures
+        {
+            get
+            {
+                HelperFeatures features = HelperFeatures.None;
+                if (Mode == LockMode.Automatic) features |= HelperFeatures.LidLock;
+
+                // An enabled hotkey with nothing bound asks the helper for
+                // nothing, and must not be the reason a process exists.
+                if (HotkeyEnabled && Hotkey != null && Hotkey.IsUsable)
+                    features |= HelperFeatures.GlobalHotkey;
+
+                return features;
+            }
         }
 
         public string Serialize()
@@ -29,8 +70,11 @@ namespace AFKLocker.Core
             var text = new StringBuilder();
             text.AppendLine("# AFKLocker settings");
             text.AppendLine("# lock-mode: manual (double-click to lock) or automatic (lock when the lid closes)");
+            text.AppendLine("# hotkey: modifiers:virtual-key, both decimal. Set through AFKLocker Setup.");
             text.AppendLine("version=" + CurrentVersion.ToString(CultureInfo.InvariantCulture));
             text.AppendLine("lock-mode=" + (Mode == LockMode.Automatic ? "automatic" : "manual"));
+            text.AppendLine("hotkey-enabled=" + (HotkeyEnabled ? "true" : "false"));
+            text.AppendLine("hotkey=" + (Hotkey == null ? string.Empty : Hotkey.Serialize()));
             return text.ToString();
         }
 
@@ -59,6 +103,19 @@ namespace AFKLocker.Core
 
                 if (key == "lock-mode" && string.Equals(value, "automatic", StringComparison.OrdinalIgnoreCase))
                     settings.Mode = LockMode.Automatic;
+
+                if (key == "hotkey-enabled" && string.Equals(value, "true", StringComparison.OrdinalIgnoreCase))
+                    settings.HotkeyEnabled = true;
+
+                if (key == "hotkey")
+                {
+                    HotkeyBinding binding;
+                    // A binding that will not parse is left empty rather than
+                    // guessed at. Guessing would bind a key the user never chose.
+                    settings.Hotkey = HotkeyBinding.TryParse(value, out binding)
+                        ? binding
+                        : HotkeyBinding.Empty;
+                }
             }
 
             return settings;
@@ -94,21 +151,26 @@ namespace AFKLocker.Core
             get { return _path; }
         }
 
+        /// <summary>
+        /// Reads the settings. A file that is not there means a machine that has
+        /// never been configured, which is genuinely the defaults.
+        ///
+        /// A file that IS there and cannot be read is a different thing, and it
+        /// throws. It used to return the defaults too, and that came within one
+        /// call of destroying people's configuration: reconciliation would read
+        /// "Manual, no hotkey", conclude nothing needed a helper, tear the helper
+        /// and the sign-in entry down, and then <em>write those defaults over the
+        /// file it had just failed to read</em> - reporting success. One transient
+        /// lock from a backup or antivirus scan was enough.
+        ///
+        /// Failing open is fine for showing a status. It is not fine as an input
+        /// to a decision that overwrites the thing it failed to read, so the two
+        /// cases stopped being the same value.
+        /// </summary>
         public AutoLockSettings Load()
         {
-            try
-            {
-                if (!File.Exists(_path)) return new AutoLockSettings();
-                return AutoLockSettings.Deserialize(File.ReadAllText(_path, Encoding.UTF8));
-            }
-            catch (IOException)
-            {
-                return new AutoLockSettings();
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return new AutoLockSettings();
-            }
+            if (!File.Exists(_path)) return new AutoLockSettings();
+            return AutoLockSettings.Deserialize(File.ReadAllText(_path, Encoding.UTF8));
         }
 
         public void Save(AutoLockSettings settings)

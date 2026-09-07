@@ -44,7 +44,16 @@ namespace AFKLocker.Core
         ReadyTimeout,
 
         /// <summary>The watcher could not register for lid notifications.</summary>
-        LidNotificationFailed
+        LidNotificationFailed,
+
+        /// <summary>Windows would not reserve the chosen key combination.</summary>
+        HotkeyRegistrationFailed,
+
+        /// <summary>Nothing is switched on, so there was no reason to run.</summary>
+        NothingToDo,
+
+        /// <summary>The settings exist but could not be read, so it knew nothing to register.</summary>
+        SettingsUnreadable
     }
 
     public sealed class WatcherStartResult
@@ -123,6 +132,15 @@ namespace AFKLocker.Core
         /// <summary>Exit code the watcher uses when another instance already holds the slot.</summary>
         public const int ExitCodeAlreadyRunning = 3;
 
+        /// <summary>Exit code the watcher uses when Windows refused the hotkey.</summary>
+        public const int ExitCodeHotkeyRegistrationFailed = 4;
+
+        /// <summary>Exit code the watcher uses when no feature needs it running.</summary>
+        public const int ExitCodeNothingToDo = 5;
+
+        /// <summary>Exit code the watcher uses when it cannot read its settings.</summary>
+        public const int ExitCodeSettingsUnreadable = 6;
+
         private static readonly TimeSpan DefaultReadyTimeout = TimeSpan.FromSeconds(15);
         private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(50);
 
@@ -149,11 +167,27 @@ namespace AFKLocker.Core
         {
             get
             {
-                bool createdNew;
-                // Opening the mutex is enough: if we created it, nobody held it.
-                using (new Mutex(false, RunningMutexName, out createdNew))
+                try
                 {
-                    return !createdNew;
+                    bool createdNew;
+                    // Opening the mutex is enough: if we created it, nobody held it.
+                    using (new Mutex(false, RunningMutexName, out createdNew))
+                    {
+                        return !createdNew;
+                    }
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Its twin below already guards this. Without the same guard
+                    // here, a throw escapes GetState, then GetStatus - which
+                    // calls it outside its own try - and Setup fails to open at
+                    // all. Something exists that we may not touch, which is
+                    // closer to "running" than to "not".
+                    return true;
+                }
+                catch (IOException)
+                {
+                    return true;
                 }
             }
         }
@@ -266,8 +300,24 @@ namespace AFKLocker.Core
 
                     if (exitCode == ExitCodeLidNotificationFailed)
                         return WatcherStartResult.Failed(WatcherStartFailure.LidNotificationFailed,
-                            "Windows refused to register the watcher for lid notifications, so "
+                            "Windows refused to register the helper for lid notifications, so "
                             + "closing the lid could never lock this machine.");
+
+                    if (exitCode == ExitCodeHotkeyRegistrationFailed)
+                        return WatcherStartResult.Failed(WatcherStartFailure.HotkeyRegistrationFailed,
+                            "Windows would not reserve that key combination, so the global hotkey "
+                            + "could never fire. It is most likely already registered by another "
+                            + "application.");
+
+                    if (exitCode == ExitCodeNothingToDo)
+                        return WatcherStartResult.Failed(WatcherStartFailure.NothingToDo,
+                            "The helper had nothing to do: neither automatic locking nor the "
+                            + "global hotkey is switched on.");
+
+                    if (exitCode == ExitCodeSettingsUnreadable)
+                        return WatcherStartResult.Failed(WatcherStartFailure.SettingsUnreadable,
+                            "The helper could not read the AFKLocker settings, so it did not "
+                            + "know what to listen for.");
 
                     if (exitCode == ExitCodeAlreadyRunning)
                     {

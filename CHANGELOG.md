@@ -3,6 +3,72 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Global lock hotkey, opt-in and off by default.** Choose any key or combination in AFKLocker
+  Setup and press it anywhere to lock, with exactly the same behaviour as double-clicking the
+  icon - the same code runs, so the two cannot drift apart.
+
+  It uses Windows' `RegisterHotKey`, never a keyboard hook. AFKLocker asks Windows to be told when
+  one combination is pressed and Windows tells it only that; no other keystroke reaches the
+  program. **AFKLocker still does not monitor what you type**, and the diagnostics bundle reports
+  the key you chose and nothing about keys you press.
+
+  Measured rather than assumed: the **Menu** key (`VK_APPS`) registers on its own, so it can be
+  bound without a hook. Windows reports its own reservations - F12, `Win`+`L`, `Ctrl`+`Esc`,
+  `Alt`+`Tab` all refuse with "already registered" - so there is no invented list of forbidden
+  keys; the API is asked and its answer shown. The single hand-written rule is that a bare
+  modifier is refused, because `RegisterHotKey` accepts it and then nothing ever fires.
+
+  Setup checks a combination with Windows before saving it, so a conflict with another program is
+  a sentence while you are choosing rather than a helper that fails to start later.
+
+### Changed
+
+- **Whether a background helper runs now follows the features switched on, not the lock mode.**
+  `AFKLockerWatcher.exe` was a lid watcher and is now a helper with two separate jobs. Manual mode
+  no longer means "no helper, ever" - it means "no helper unless the hotkey needs one".
+
+  | Automatic | Hotkey | Helper |
+  |---|---|---|
+  | off | off | none |
+  | off | on | runs, for the hotkey |
+  | on | off | runs, for the lid |
+  | on | on | one process, both jobs |
+
+  Turning one feature off no longer stops a helper the other still needs, and the autostart entry
+  follows the same rule. With both off, nothing is resident and nothing is registered, exactly as
+  before.
+
+- **READY now means every enabled feature is working**, not just lid registration. A helper
+  started for the hotkey signals ready only once `RegisterHotKey` succeeded; with both features on
+  it signals only when both did. New exit codes distinguish a hotkey Windows refused (4) from a
+  helper that had nothing to do (5).
+
+- A helper found running but never ready is now reported as a contradiction rather than a
+  transient. Enabling waits for readiness before returning, so that state means stuck, not
+  mid-launch, and reconciliation restarts it.
+
+### Fixed
+
+- **The autostart entry is validated, not merely counted.** The old check asked whether the
+  command contained `AFKLockerWatcher.exe`, which accepts an entry left behind by an uninstalled
+  copy in a folder that no longer exists: it looks healthy in every status screen and starts
+  nothing.
+
+  The command is now parsed and the executable compared semantically - environment variables
+  expanded, 8.3 names resolved, casing and quoting and redundant path segments ignored - and
+  reported as absent, correct, wrong target, malformed, or unreadable. `D:\Old\AFKLockerWatcher.exe`
+  is no longer accepted because it ends in the right file name, and `Reconcile()` rewrites a wrong
+  entry rather than tolerating it. Diagnostics says which, with the path redacted as usual.
+
+- Asking to enable a hotkey that could never work reported **success** while manual mode was on.
+  An unusable key contributes no feature, so the request looked identical to asking for nothing at
+  all: the machine stood down, said it worked, and saved a hotkey switched on with a key that
+  could never fire. It is now refused before anything is touched.
+
 ## [0.4.1] - 2026-09-07
 
 ### Fixed

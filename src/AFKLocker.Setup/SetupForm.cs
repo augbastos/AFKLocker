@@ -22,6 +22,21 @@ namespace AFKLocker.Setup
     {
         private const int EdgeMargin = 24;
 
+        /// <summary>
+        /// The window is two columns, not one tall strip.
+        ///
+        /// Everything here is a short, self-contained block, and stacking them
+        /// all vertically produced a window taller than the screen: it scrolled,
+        /// the buttons at the bottom needed scrolling to reach, and the
+        /// right-aligned Close ended up colliding with Diagnostics once the
+        /// scrollbar took its width. Reading across two columns costs nothing -
+        /// the left side is what this machine is, the right side is what you
+        /// want it to do - and the whole thing fits on screen with no scrolling.
+        /// </summary>
+        private const int ColumnWidth = 430;
+
+        private const int ColumnGutter = 40;
+
         private readonly IPowerConfiguration _power;
         private readonly IPowerInformation _info;
         private readonly IBackupStore _backups;
@@ -41,6 +56,19 @@ namespace AFKLocker.Setup
         private readonly RadioButton _automaticRadio = new RadioButton();
         private readonly Label _automaticNote = new Label();
         private readonly Label _watcherStatus = new Label();
+
+        private readonly Label _hotkeyHeader = new Label();
+        private readonly CheckBox _hotkeyCheck = new CheckBox();
+        private readonly HotkeyBox _hotkeyBox = new HotkeyBox();
+        private readonly Button _hotkeyClear = new Button();
+        private readonly Label _hotkeyNote = new Label();
+        private readonly Label _hotkeyStatus = new Label();
+
+        /// <summary>What the form last read from disk, so a change can be told from a redraw.</summary>
+        private AutoLockSettings _savedSettings = new AutoLockSettings();
+
+        /// <summary>Guards the handlers while the form is writing its own controls.</summary>
+        private bool _loading;
 
         private readonly Button _applyButton = new Button();
         private readonly Button _restoreButton = new Button();
@@ -101,8 +129,8 @@ namespace AFKLocker.Setup
             Text = "AFKLocker Setup";
             Font = new Font("Segoe UI", 9F);
             BackColor = Color.White;
-            ClientSize = new Size(560, 740);
-            MinimumSize = new Size(540, 560);
+            ClientSize = new Size((EdgeMargin * 2) + (ColumnWidth * 2) + ColumnGutter, 660);
+            MinimumSize = new Size(560, 480);
             StartPosition = FormStartPosition.CenterScreen;
             MaximizeBox = false;
             FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -118,7 +146,10 @@ namespace AFKLocker.Setup
                 // Cosmetic only - never stop the window opening over an icon.
             }
 
-            int width = ClientSize.Width - (EdgeMargin * 2);
+            // Notes and panels are sized to a COLUMN, not to the window. Sizing
+            // them to the window is what made every block full-width and forced
+            // the vertical stack in the first place.
+            int width = ColumnWidth;
 
             var title = new Label
             {
@@ -141,14 +172,16 @@ namespace AFKLocker.Setup
             _planLabel.ForeColor = Color.FromArgb(94, 94, 94);
             _planLabel.AutoSize = true;
 
+            // Left-anchored, not stretched to the window: these live in the left
+            // column and must not grow across the gutter into the right one.
             _checksPanel.Width = width;
             _checksPanel.Height = 200;
-            _checksPanel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            _checksPanel.Anchor = AnchorStyles.Top | AnchorStyles.Left;
 
             _separator.BorderStyle = BorderStyle.Fixed3D;
             _separator.Height = 2;
             _separator.Width = width;
-            _separator.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            _separator.Anchor = AnchorStyles.Top | AnchorStyles.Left;
 
             _summaryLabel.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
             _summaryLabel.AutoSize = true;
@@ -183,6 +216,29 @@ namespace AFKLocker.Setup
             _watcherStatus.MaximumSize = new Size(width - 20, 0);
             _watcherStatus.ForeColor = Color.FromArgb(94, 94, 94);
 
+            StyleSectionHeader(_hotkeyHeader, "GLOBAL HOTKEY");
+
+            _hotkeyCheck.Text = "Lock with a keyboard shortcut";
+            _hotkeyCheck.AutoSize = true;
+            _hotkeyCheck.CheckedChanged += OnHotkeyEnabledChanged;
+
+            _hotkeyBox.Width = 200;
+            _hotkeyBox.BindingChanged += OnHotkeyBindingChanged;
+
+            _hotkeyClear.Text = "Clear";
+            _hotkeyClear.Size = new Size(70, 24);
+            _hotkeyClear.Click += OnHotkeyClearClicked;
+
+            StyleNote(_hotkeyNote, width - 20,
+                "Off by default. Click the box and press the keys you want. Windows tells AFKLocker "
+                + "only when that exact combination is pressed - it never sees anything else you type. "
+                + "A small background helper runs while this is on, because something has to be "
+                + "waiting for the key.");
+
+            _hotkeyStatus.AutoSize = true;
+            _hotkeyStatus.MaximumSize = new Size(width - 20, 0);
+            _hotkeyStatus.ForeColor = Color.FromArgb(94, 94, 94);
+
             _applyButton.Text = "Apply configuration";
             _applyButton.Size = new Size(160, 32);
             _applyButton.Anchor = AnchorStyles.Top | AnchorStyles.Left;
@@ -212,6 +268,7 @@ namespace AFKLocker.Setup
                 _readinessHeader, _planLabel, _checksPanel, _separator, _summaryLabel,
                 _batteryCheck, _batteryNote,
                 _lockHeader, _manualRadio, _manualNote, _automaticRadio, _automaticNote, _watcherStatus,
+                _hotkeyHeader, _hotkeyCheck, _hotkeyBox, _hotkeyClear, _hotkeyNote, _hotkeyStatus,
                 _applyButton, _restoreButton, _diagnosticsButton, _closeButton
             });
         }
@@ -240,52 +297,85 @@ namespace AFKLocker.Setup
         private void PerformVerticalLayout(int checksContentHeight)
         {
             const int MaxChecksHeight = 300;
-            int y = 88;
 
-            _readinessHeader.Location = new Point(EdgeMargin, y);
+            int left = EdgeMargin;
+            int right = EdgeMargin + ColumnWidth + ColumnGutter;
+            int top = 88;
+
+            // --- left column: what this machine is ---------------------------
+            int y = top;
+
+            _readinessHeader.Location = new Point(left, y);
             y = _readinessHeader.Bottom + 8;
 
-            _planLabel.Location = new Point(EdgeMargin, y);
+            _planLabel.Location = new Point(left, y);
             y = _planLabel.Bottom + 8;
 
-            _checksPanel.Location = new Point(EdgeMargin, y);
+            _checksPanel.Location = new Point(left, y);
             _checksPanel.Height = Math.Min(Math.Max(checksContentHeight, 60), MaxChecksHeight);
             _checksPanel.AutoScroll = checksContentHeight > MaxChecksHeight;
             y = _checksPanel.Bottom + 10;
 
-            _separator.Location = new Point(EdgeMargin, y);
+            _separator.Location = new Point(left, y);
             y = _separator.Bottom + 12;
 
-            _summaryLabel.Location = new Point(EdgeMargin, y);
+            _summaryLabel.Location = new Point(left, y);
             y = _summaryLabel.Bottom + 14;
 
-            _batteryCheck.Location = new Point(EdgeMargin + 2, y);
+            _batteryCheck.Location = new Point(left + 2, y);
             y = _batteryCheck.Bottom + 4;
 
-            _batteryNote.Location = new Point(EdgeMargin + 20, y);
-            y = _batteryNote.Bottom + 24;
+            _batteryNote.Location = new Point(left + 20, y);
+            int leftBottom = _batteryNote.Bottom;
 
-            _lockHeader.Location = new Point(EdgeMargin, y);
+            // --- right column: what you want it to do -------------------------
+            y = top;
+
+            _lockHeader.Location = new Point(right, y);
             y = _lockHeader.Bottom + 10;
 
-            _manualRadio.Location = new Point(EdgeMargin + 2, y);
+            _manualRadio.Location = new Point(right + 2, y);
             y = _manualRadio.Bottom + 2;
-            _manualNote.Location = new Point(EdgeMargin + 20, y);
+            _manualNote.Location = new Point(right + 20, y);
             y = _manualNote.Bottom + 12;
 
-            _automaticRadio.Location = new Point(EdgeMargin + 2, y);
+            _automaticRadio.Location = new Point(right + 2, y);
             y = _automaticRadio.Bottom + 2;
-            _automaticNote.Location = new Point(EdgeMargin + 20, y);
+            _automaticNote.Location = new Point(right + 20, y);
             y = _automaticNote.Bottom + 8;
 
-            _watcherStatus.Location = new Point(EdgeMargin + 20, y);
-            y = _watcherStatus.Bottom + 20;
+            _watcherStatus.Location = new Point(right + 20, y);
+            y = _watcherStatus.Bottom + 24;
 
-            int buttonRow = y;
+            _hotkeyHeader.Location = new Point(right, y);
+            y = _hotkeyHeader.Bottom + 10;
+
+            _hotkeyCheck.Location = new Point(right + 2, y);
+            y = _hotkeyCheck.Bottom + 6;
+
+            _hotkeyBox.Location = new Point(right + 20, y);
+            _hotkeyClear.Location = new Point(_hotkeyBox.Right + 8, y - 1);
+            y = _hotkeyBox.Bottom + 6;
+
+            _hotkeyNote.Location = new Point(right + 20, y);
+            y = _hotkeyNote.Bottom + 6;
+
+            _hotkeyStatus.Location = new Point(right + 20, y);
+            int rightBottom = _hotkeyStatus.Bottom;
+
+            // --- buttons, under whichever column ran longer -------------------
+            int buttonRow = Math.Max(leftBottom, rightBottom) + 24;
+
             _applyButton.Location = new Point(EdgeMargin, buttonRow);
             _restoreButton.Location = new Point(_applyButton.Right + 8, buttonRow);
             _diagnosticsButton.Location = new Point(_restoreButton.Right + 8, buttonRow);
-            _closeButton.Location = new Point(ClientSize.Width - EdgeMargin - _closeButton.Width, buttonRow);
+
+            // Right-aligned, but never on top of Diagnostics. The old code
+            // trusted ClientSize.Width, which shrinks when a scrollbar appears -
+            // and that is exactly when the two collided.
+            int closeX = ClientSize.Width - EdgeMargin - _closeButton.Width;
+            int earliestCloseX = _diagnosticsButton.Right + 16;
+            _closeButton.Location = new Point(Math.Max(closeX, earliestCloseX), buttonRow);
 
             int desired = buttonRow + _applyButton.Height + 20;
             int available = Screen.FromControl(this).WorkingArea.Height - 80;
@@ -372,14 +462,70 @@ namespace AFKLocker.Setup
             // Red whenever automatic mode is on but will not actually lock:
             // the watcher is not ready, the configuration disagrees with
             // reality, or the machine reports no lid at all.
-            bool wontWork = status.Mode == LockMode.Automatic
-                && (!status.WatcherReady
-                    || !status.IsConsistent
-                    || (_report != null
-                        && AutoLockAdvisor.Evaluate(status.Mode, _report.Snapshot)
-                           == AutoLockWarning.NoLidReported));
+            // Not gated on HelperRequired: "nothing needs a helper, but a
+            // sign-in entry is still there" is exactly a state worth colouring.
+            bool wontWork = !status.IsConsistent
+                || (status.HelperRequired
+                    && (!status.WatcherReady
+                        || (status.Mode == LockMode.Automatic
+                            && _report != null
+                            && AutoLockAdvisor.Evaluate(status.Mode, _report.Snapshot)
+                               == AutoLockWarning.NoLidReported)));
 
             _watcherStatus.ForeColor = wontWork
+                ? Color.FromArgb(196, 43, 28)
+                : Color.FromArgb(94, 94, 94);
+
+            RefreshHotkey(status);
+        }
+
+        private void RefreshHotkey(AutoLockStatus status)
+        {
+            _savedSettings = _autoLock.GetSettings();
+
+            _loading = true;
+            _hotkeyCheck.Checked = status.HotkeyEnabled;
+            _hotkeyBox.SetBindingQuietly(status.Hotkey);
+            _loading = false;
+
+            _hotkeyCheck.Enabled = status.WatcherInstalled;
+            _hotkeyBox.Enabled = status.WatcherInstalled;
+            _hotkeyClear.Enabled = status.WatcherInstalled && !status.Hotkey.IsEmpty;
+
+            if (!status.WatcherInstalled)
+            {
+                _hotkeyStatus.Text = "Unavailable: the AFKLocker helper was not found next to this program.";
+                _hotkeyStatus.ForeColor = Color.FromArgb(196, 43, 28);
+                return;
+            }
+
+            bool broken = false;
+
+            if (!status.HotkeyEnabled)
+            {
+                _hotkeyStatus.Text = status.Hotkey.IsEmpty
+                    ? "Off. Nothing is bound."
+                    : "Off. " + status.Hotkey.Describe() + " is remembered but not active.";
+            }
+            else if (!status.Hotkey.IsUsable)
+            {
+                _hotkeyStatus.Text = "On, but not usable: " + status.Hotkey.Problem;
+                broken = true;
+            }
+            else if (status.WatcherState == WatcherState.Ready)
+            {
+                _hotkeyStatus.Text = "On. Press " + status.Hotkey.Describe() + " anywhere to lock.";
+            }
+            else
+            {
+                // Saying "on" while the helper that answers the key is not
+                // running would be the same lie the readiness handshake exists
+                // to prevent.
+                _hotkeyStatus.Text = "On, but the helper is not ready, so the key will not work yet.";
+                broken = true;
+            }
+
+            _hotkeyStatus.ForeColor = broken
                 ? Color.FromArgb(196, 43, 28)
                 : Color.FromArgb(94, 94, 94);
         }
@@ -389,11 +535,21 @@ namespace AFKLocker.Setup
             if (!status.WatcherInstalled)
                 return "Automatic lock is unavailable: AFKLockerWatcher.exe was not found next to this program.";
 
-            if (status.Mode == LockMode.Manual)
-                return "Watcher: not running. Nothing of AFKLocker is resident in manual mode.";
+            if (!status.HelperRequired)
+            {
+                if (status.IsConsistent)
+                    return "Helper: not running. Nothing of AFKLocker is resident with manual "
+                           + "locking and the hotkey off.";
+
+                // Returning the happy sentence unconditionally hid the one thing
+                // worth saying here: that something is still set to start at
+                // sign-in for features that are now off.
+                return "Helper: not running. " + status.Inconsistency;
+            }
 
             var text = new StringBuilder();
             text.Append(DescribeWatcherState(status.WatcherState));
+            text.Append(" It is needed for " + status.HelperPurpose + ".");
 
             // A mismatch between what was configured and what is true gets said
             // plainly, rather than showing a healthy-looking line over a broken
@@ -423,15 +579,96 @@ namespace AFKLocker.Setup
             switch (state)
             {
                 case WatcherState.Ready:
-                    return "Watcher: ready and listening for the lid. It starts again each time you sign in.";
+                    return "Helper: ready. It starts again each time you sign in.";
                 case WatcherState.Starting:
-                    return "Watcher: starting - running, but not yet listening for the lid.";
+                    return "Helper: starting - running, but not ready yet.";
                 case WatcherState.Unhealthy:
-                    return "Watcher: unhealthy. Select Manual and then Automatic again to restart it.";
+                    return "Helper: unhealthy. Reopening this window repairs it.";
                 default:
-                    return "Watcher: not running, although automatic mode is on. Select Manual and "
-                           + "then Automatic again to restart it.";
+                    return "Helper: not running, although something needs it. "
+                           + "Reopening this window repairs it.";
             }
+        }
+
+        // ------------------------------------------------------------ hotkey ---
+
+        private void OnHotkeyEnabledChanged(object sender, EventArgs e)
+        {
+            if (_loading) return;
+
+            if (!_hotkeyCheck.Checked)
+            {
+                ApplyHotkey(false, _hotkeyBox.Binding);
+                return;
+            }
+
+            // Ticking the box with nothing bound is not an error, it is the
+            // normal order of doing this. Wait for a key rather than refusing.
+            if (_hotkeyBox.Binding.IsEmpty)
+            {
+                _hotkeyStatus.Text = "Click the box and press the keys you want to use.";
+                _hotkeyBox.Focus();
+                return;
+            }
+
+            ApplyHotkey(true, _hotkeyBox.Binding);
+        }
+
+        private void OnHotkeyBindingChanged(object sender, EventArgs e)
+        {
+            if (_loading) return;
+
+            HotkeyBinding binding = _hotkeyBox.Binding;
+
+            if (!binding.IsUsable)
+            {
+                _hotkeyStatus.Text = binding.Problem;
+                return;
+            }
+
+            // Ask Windows before saving anything. A conflict found here is one
+            // sentence; the same conflict found later is a helper that will not
+            // start and a user with no idea why.
+            HotkeyRegistrationResult probe = HotkeyProbe.TestAvailability(binding);
+            if (!probe.Success)
+            {
+                _hotkeyStatus.Text = probe.Message + " Pick a different combination.";
+                return;
+            }
+
+            if (!_hotkeyCheck.Checked)
+            {
+                _hotkeyStatus.Text = binding.Describe()
+                    + " is available. Tick the box above to switch it on.";
+                return;
+            }
+
+            ApplyHotkey(true, binding);
+        }
+
+        private void OnHotkeyClearClicked(object sender, EventArgs e)
+        {
+            _hotkeyBox.SetBindingQuietly(HotkeyBinding.Empty);
+            ApplyHotkey(false, HotkeyBinding.Empty);
+        }
+
+        private void ApplyHotkey(bool enabled, HotkeyBinding binding)
+        {
+            try
+            {
+                AutoLockResult result = _autoLock.SetHotkey(enabled, binding);
+                if (!result.Success)
+                    ShowMessage(DescribeFailure(enabled
+                        ? "The global hotkey could not be turned on."
+                        : "The global hotkey could not be turned off.", result), MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                ShowMessage("Could not change the global hotkey.\r\n\r\n" + ex.Message,
+                    MessageBoxIcon.Warning);
+            }
+
+            RefreshLockBehaviour();
         }
 
         private void OnModeChanged(object sender, EventArgs e)
@@ -510,9 +747,15 @@ namespace AFKLocker.Setup
 
             if (result.RolledBack && result.IsClean)
             {
+                // Deliberately does not say what "the way it was" is. A rollback
+                // used to be able to end only in "manual and nothing running",
+                // so the message said so; now that turning one feature on can
+                // fail while another stays on, a rollback often ends with a
+                // helper legitimately still running. Naming a state here would
+                // be telling the user the opposite of their machine.
                 text.AppendLine();
-                text.AppendLine("Everything was put back the way it was - this machine is in manual "
-                                + "mode and nothing of AFKLocker is running.");
+                text.AppendLine("Everything was put back the way it was - nothing on this machine "
+                                + "was left half-changed.");
             }
 
             if (!result.IsClean)

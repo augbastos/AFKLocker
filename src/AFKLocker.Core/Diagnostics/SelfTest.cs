@@ -292,19 +292,21 @@ namespace AFKLocker.Core.Diagnostics
         {
             const string Section = "AFKLocker";
 
-            LockMode mode;
+            AutoLockSettings settings;
             try
             {
-                mode = _settings.Load().Mode;
+                settings = _settings.Load();
                 report.Add(Section, "afk.settings", "Settings readable", CheckOutcome.Pass,
-                    "Lock mode: " + (mode == LockMode.Automatic ? "Automatic" : "Manual"));
+                    "Lock mode: " + (settings.Mode == LockMode.Automatic ? "Automatic" : "Manual"));
             }
             catch (Exception ex)
             {
-                mode = LockMode.Manual;
+                settings = new AutoLockSettings();
                 report.Add(Section, "afk.settings", "Settings readable", CheckOutcome.Fail,
                     _redactor.Redact(ex.Message));
             }
+
+            LockMode mode = settings.Mode;
             report.Fact("afklocker.lockMode", mode.ToString());
 
             try
@@ -334,38 +336,30 @@ namespace AFKLocker.Core.Diagnostics
             report.Fact("watcher.state", state.ToString());
             report.Fact("watcher.ready", state == WatcherState.Ready);
 
-            bool autostartRegistered;
-            string autostartCommand;
-            try
-            {
-                autostartCommand = _autostart.RegisteredCommand;
-                autostartRegistered = autostartCommand != null;
-            }
-            catch (Exception)
-            {
-                autostartCommand = null;
-                autostartRegistered = false;
-            }
+            // The old check was "does this string contain AFKLockerWatcher.exe",
+            // which happily accepted an entry left behind by an older install in
+            // a folder that no longer exists. It looked healthy and started
+            // nothing.
+            AutostartInspection autostart = AutostartInspector.Inspect(_autostart, _watcherPath);
 
-            bool autostartMatches = autostartRegistered && watcherInstalled
-                && autostartCommand.IndexOf(WatcherController.WatcherFileName,
-                    StringComparison.OrdinalIgnoreCase) >= 0;
-
-            report.Add(Section, "afk.autostart", "Autostart entry",
-                DescribeAutostartOutcome(mode, autostartRegistered, autostartMatches),
-                autostartRegistered
-                    ? _redactor.RedactPath(autostartCommand.Trim('"'))
-                    : "Not registered");
-            report.Fact("autostart.registered", autostartRegistered);
-            report.Fact("autostart.pointsAtWatcher", autostartMatches);
+            report.Add(Section, "afk.autostart", "Autostart",
+                AutostartOutcome(settings, autostart.State),
+                DescribeAutostart(autostart));
+            report.Fact("autostart.state", autostart.State.ToString());
+            report.Fact("autostart.correct", autostart.State == AutostartState.Correct);
 
             var status = new AutoLockStatus
             {
                 Mode = mode,
-                AutostartRegistered = autostartRegistered,
+                HotkeyEnabled = settings.HotkeyEnabled,
+                Hotkey = settings.Hotkey,
+                Autostart = autostart.State,
+                AutostartProblem = autostart.Problem,
                 WatcherState = state,
                 WatcherInstalled = watcherInstalled
             };
+
+            CheckHotkey(report, settings);
 
             report.Add(Section, "afk.consistency", "Configuration consistent",
                 status.IsConsistent ? CheckOutcome.Pass : CheckOutcome.Fail,
@@ -412,11 +406,100 @@ namespace AFKLocker.Core.Diagnostics
             }
         }
 
-        private static CheckOutcome DescribeAutostartOutcome(LockMode mode, bool registered, bool matches)
+        private static CheckOutcome AutostartOutcome(AutoLockSettings settings, AutostartState state)
         {
-            if (mode == LockMode.Automatic)
-                return registered && matches ? CheckOutcome.Pass : CheckOutcome.Fail;
-            return registered ? CheckOutcome.Warning : CheckOutcome.Pass;
+            if (state == AutostartState.ReadFailed) return CheckOutcome.Warning;
+
+            // Whether an entry should exist follows from the features switched
+            // on, not from the lock mode: a hotkey-only helper needs one too.
+            if (settings.RequiredFeatures != HelperFeatures.None)
+                return state == AutostartState.Correct ? CheckOutcome.Pass : CheckOutcome.Fail;
+
+            return state == AutostartState.Absent ? CheckOutcome.Pass : CheckOutcome.Warning;
+        }
+
+        private string DescribeAutostart(AutostartInspection autostart)
+        {
+            switch (autostart.State)
+            {
+                case AutostartState.Correct:
+                    return "PASS - points to current AFKLocker helper";
+
+                case AutostartState.WrongTarget:
+                    // The path is redacted like every other path in the bundle,
+                    // so a tester can send this without sending their folder
+                    // layout with it.
+                    return "FAIL - entry points to a different location ("
+                        + _redactor.RedactPath(autostart.ExecutablePath) + ")";
+
+                case AutostartState.Malformed:
+                    return "FAIL - " + autostart.Problem;
+
+                case AutostartState.ReadFailed:
+                    return "UNKNOWN - the startup entry could not be read";
+
+                default:
+                    return "Not registered";
+            }
+        }
+
+        // ------------------------------------------------------------ hotkey ---
+
+        /// <summary>
+        /// Reports the hotkey as configured, and whether Windows would accept it.
+        ///
+        /// It reports the <em>setting</em> and nothing else. No keystroke, no
+        /// timing, no history: AFKLocker never sees a key it did not reserve, and
+        /// a diagnostics bundle that carried keyboard activity would make that
+        /// claim untrue the moment somebody sent one in.
+        /// </summary>
+        private void CheckHotkey(DiagnosticReport report, AutoLockSettings settings)
+        {
+            const string Section = "AFKLocker";
+
+            report.Fact("hotkey.enabled", settings.HotkeyEnabled);
+
+            if (!settings.HotkeyEnabled)
+            {
+                report.Add(Section, "afk.hotkey", "Global hotkey", CheckOutcome.Info, "Off");
+                report.Fact("hotkey.binding", null);
+                return;
+            }
+
+            HotkeyBinding binding = settings.Hotkey ?? HotkeyBinding.Empty;
+            report.Fact("hotkey.binding", binding.Describe());
+
+            if (!binding.IsUsable)
+            {
+                report.Add(Section, "afk.hotkey", "Global hotkey", CheckOutcome.Fail,
+                    "On, but not usable: " + binding.Problem);
+                report.Fact("hotkey.registration", "NotUsable");
+                return;
+            }
+
+            report.Add(Section, "afk.hotkey", "Global hotkey", CheckOutcome.Pass,
+                "On - " + binding.Describe());
+
+            // Asking Windows is the only honest answer, and it costs a
+            // registration that is released in the same breath. Skipped when the
+            // helper is already holding this exact combination, because then the
+            // refusal would be our own helper and reporting a conflict would be
+            // a lie.
+            if (_watcher.GetState() == WatcherState.Ready)
+            {
+                report.Add(Section, "afk.hotkeyReg", "Hotkey registration", CheckOutcome.Pass,
+                    "PASS - held by the running AFKLocker helper");
+                report.Fact("hotkey.registration", "HeldByHelper");
+                return;
+            }
+
+            HotkeyRegistrationResult probe = HotkeyProbe.TestAvailability(binding);
+            report.Add(Section, "afk.hotkeyReg", "Hotkey registration",
+                probe.Success ? CheckOutcome.Pass : CheckOutcome.Fail,
+                probe.Success ? "PASS - Windows accepts this combination"
+                              : "FAIL - " + probe.Message);
+            report.Fact("hotkey.registration",
+                probe.Success ? "Pass" : probe.Failure.ToString());
         }
 
         // ----------------------------------------------- watcher lifecycle ---

@@ -5,11 +5,20 @@ using System.Windows.Forms;
 namespace AFKLocker.Core
 {
     /// <summary>
-    /// Receives lid open/close events from Windows.
+    /// The helper's hidden window: lid events, and the global hotkey.
     ///
-    /// Windows delivers GUID_LIDSWITCH_STATE_CHANGE to a window, so this owns a
-    /// hidden one. There is no polling anywhere: the process sleeps until
-    /// Windows posts a message.
+    /// Windows delivers GUID_LIDSWITCH_STATE_CHANGE and WM_HOTKEY to a window,
+    /// so this owns a hidden one. There is no polling anywhere: the process
+    /// sleeps until Windows posts a message.
+    ///
+    /// Creating the window and subscribing to something are separate steps,
+    /// because the helper may want only one of the two: a hotkey-only helper has
+    /// no business registering for lid notifications, and failing to register
+    /// for lid events must not be fatal to a helper that was never asked for
+    /// them.
+    ///
+    /// The name says lid because that is what it started as and renaming it
+    /// would churn every caller for nothing; it is the helper's window now.
     ///
     /// The window is an ordinary top-level window that is simply never shown,
     /// not a message-only (HWND_MESSAGE) window. Message-only windows are
@@ -27,6 +36,7 @@ namespace AFKLocker.Core
 
         private const int WM_POWERBROADCAST = 0x0218;
         private const int WM_CLOSE = 0x0010;
+        private const int WM_HOTKEY = 0x0312;
         private const int PBT_APMRESUMEAUTOMATIC = 0x0012;
         private const int PBT_APMRESUMESUSPEND = 0x0007;
         private const int PBT_POWERSETTINGCHANGE = 0x8013;
@@ -61,6 +71,14 @@ namespace AFKLocker.Core
         public event EventHandler CloseRequested;
 
         /// <summary>
+        /// Raised when the registered hotkey is pressed. This is the only thing
+        /// this process ever learns about the keyboard: Windows posts one
+        /// message for one reserved combination, and no other keystroke is
+        /// visible here at all.
+        /// </summary>
+        public event EventHandler HotkeyPressed;
+
+        /// <summary>
         /// True once Windows has actually reported a lid position. Registration
         /// succeeds even on machines with no lid - the documentation is explicit
         /// that the callback is not made "until a lid device is found and its
@@ -69,13 +87,20 @@ namespace AFKLocker.Core
         /// </summary>
         public bool HasSeenLidEvent { get; private set; }
 
-        public bool Start()
+        /// <summary>
+        /// Creates the window without subscribing to anything. Needed on its own
+        /// by a helper that only wants the hotkey, which still needs a window
+        /// for Windows to post WM_HOTKEY to.
+        /// </summary>
+        public bool Create()
         {
-            if (Handle == IntPtr.Zero)
+            if (Handle != IntPtr.Zero) return true;
+
+            try
             {
                 var parameters = new CreateParams
                 {
-                    Caption = "AFKLocker Watcher",
+                    Caption = "AFKLocker Helper",
                     X = 0,
                     Y = 0,
                     Height = 0,
@@ -85,12 +110,35 @@ namespace AFKLocker.Core
                 };
                 CreateHandle(parameters);
             }
+            catch (Exception)
+            {
+                return false;
+            }
+
+            return Handle != IntPtr.Zero;
+        }
+
+        /// <summary>
+        /// Subscribes to lid open/close. Returns false when this machine cannot
+        /// deliver them, which is the difference between a helper that will lock
+        /// on lid close and one that would sit there looking healthy.
+        /// </summary>
+        public bool StartLidNotifications()
+        {
+            if (!Create()) return false;
+            if (_notificationHandle != IntPtr.Zero) return true;
 
             Guid setting = GuidLidSwitchStateChange;
             _notificationHandle = RegisterPowerSettingNotification(Handle, ref setting,
                 DEVICE_NOTIFY_WINDOW_HANDLE);
 
             return _notificationHandle != IntPtr.Zero;
+        }
+
+        /// <summary>Creates the window and subscribes to lid events, as one step.</summary>
+        public bool Start()
+        {
+            return StartLidNotifications();
         }
 
         public void Stop()
@@ -128,6 +176,15 @@ namespace AFKLocker.Core
                     Raise(Resumed);
 
                 m.Result = (IntPtr)1;   // TRUE
+                return;
+            }
+
+            if (m.Msg == WM_HOTKEY)
+            {
+                // The message carries which hotkey fired and which modifiers were
+                // down. Neither is inspected: this process registered exactly one
+                // combination, so anything arriving here is that one.
+                Raise(HotkeyPressed);
                 return;
             }
 
