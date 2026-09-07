@@ -1,0 +1,83 @@
+name: Report a problem
+description: Something did not work as described
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. The diagnostics bundle is the single most useful thing you can
+        attach - it answers most of the questions below on its own.
+
+        **AFKLocker Setup → Diagnostics → Run self-test → Export diagnostics.** Nothing is sent
+        anywhere; you get a file, and you can read it before deciding to attach it.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      placeholder: Closing the lid did not lock the machine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      placeholder: Windows should have locked when I shut the laptop.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Which lock mode?
+      options:
+        - Manual (double-click AFKLocker)
+        - Automatic (lock when the lid closes)
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: lid-test
+    attributes:
+      label: Did "Test lid detection" pass?
+      description: In Diagnostics. It never locks your session - it only listens.
+      options:
+        - Passed - close and open were both detected
+        - Partly - only one of them was detected
+        - Failed - no lid events at all
+        - Did not run it
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: AFKLocker version
+      placeholder: "0.3.0"
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: Settings → System → About, or the first line of the diagnostics summary.
+      placeholder: Windows 11, build 26100
+    validations:
+      required: false
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics bundle
+      description: |
+        Drag the `AFKLocker-Diagnostics-*.zip` into this box to attach it, or paste the summary.
+
+        It contains technical information about Windows, power management and AFKLocker. It does
+        not intentionally include your name, username, files or network information, and paths are
+        replaced with placeholders such as `%LOCALAPPDATA%`.
+      placeholder: Attach the zip here, or paste the summary text.
+    validations:
+      required: false
