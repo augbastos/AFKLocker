@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Security.Principal;
 using System.Threading;
 
 namespace AFKLocker.Core
@@ -53,7 +54,14 @@ namespace AFKLocker.Core
         NothingToDo,
 
         /// <summary>The settings exist but could not be read, so it knew nothing to register.</summary>
-        SettingsUnreadable
+        SettingsUnreadable,
+
+        /// <summary>
+        /// The caller holds an administrator token. A child process inherits it,
+        /// and the helper must never run with more rights than the session it
+        /// looks after.
+        /// </summary>
+        RequiresStandardUser
     }
 
     public sealed class WatcherStartResult
@@ -145,6 +153,7 @@ namespace AFKLocker.Core
         private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(50);
 
         private readonly TimeSpan _readyTimeout;
+        private readonly Func<bool> _isElevated;
 
         public WatcherController()
             : this(DefaultReadyTimeout)
@@ -152,8 +161,43 @@ namespace AFKLocker.Core
         }
 
         public WatcherController(TimeSpan readyTimeout)
+            : this(readyTimeout, null)
+        {
+        }
+
+        /// <summary>
+        /// The elevation check is a parameter only so the refusal in
+        /// <see cref="Start"/> can be tested without running the test suite as
+        /// administrator. Passing null uses the real token.
+        /// </summary>
+        public WatcherController(TimeSpan readyTimeout, Func<bool> isElevated)
         {
             _readyTimeout = readyTimeout;
+            _isElevated = isElevated ?? new Func<bool>(CurrentProcessIsElevated);
+        }
+
+        /// <summary>
+        /// True when this process holds an administrator token.
+        ///
+        /// Setup can be relaunched elevated, because some power settings need
+        /// it. Nothing else about AFKLocker does, and a process started from
+        /// there inherits the token - so the check exists to keep the helper out
+        /// of that inheritance.
+        /// </summary>
+        public static bool CurrentProcessIsElevated()
+        {
+            try
+            {
+                using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+                    return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+            }
+            catch (Exception)
+            {
+                // Unknown is treated as not elevated: refusing to start the
+                // helper because the token could not be read would break the
+                // ordinary case to guard against a rare one.
+                return false;
+            }
         }
 
         /// <summary>Full path of the watcher that sits next to the running program.</summary>
@@ -233,6 +277,21 @@ namespace AFKLocker.Core
             if (!File.Exists(watcherPath))
                 return WatcherStartResult.Failed(WatcherStartFailure.ExecutableMissing,
                     "AFKLockerWatcher.exe was not found at " + watcherPath);
+
+            // Checked before anything else, and deliberately unconditional. A
+            // child process inherits its parent's token, so a helper launched
+            // from an elevated AFKLocker Setup would sit in the session as
+            // administrator - holding a global hotkey registration and locking
+            // the session with rights it has no use for. The only place
+            // elevation is ever needed is writing power settings, and that
+            // happens in Setup itself. This is the one line the helper can be
+            // started from, so refusing here is what makes "never elevated" a
+            // property of the program rather than of its callers.
+            if (_isElevated())
+                return WatcherStartResult.Failed(WatcherStartFailure.RequiresStandardUser,
+                    "The helper was not started: this program is running as administrator, and "
+                    + "the helper must never run elevated. Close this window and open AFKLocker "
+                    + "Setup normally to change the background features.");
 
             if (GetState() == WatcherState.Ready)
                 return WatcherStartResult.Ok();

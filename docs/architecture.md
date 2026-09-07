@@ -447,5 +447,15 @@ Changing power settings on the user's own plan does not need administrator right
 Windows install; when Windows does refuse, Setup detects `ERROR_ACCESS_DENIED` and offers to
 relaunch elevated.
 
+That relaunched window is deliberately narrower than the one it came from. A process started with
+`Process.Start` inherits its parent's token, so a helper launched from there would run as
+administrator for the rest of the session — holding a global hotkey registration and locking the
+session with rights it has no use for. `WatcherController.Start` refuses outright when the calling
+process is elevated, which is the single line the helper can be launched from; and
+`AutoLockManager` stands aside before that refusal can be reached, because a refusal arriving
+mid-transaction would look like "automatic mode is broken" and be grounds to switch the user's
+features off. So the elevated window writes power settings and nothing else, and says so where the
+mode and hotkey controls would otherwise be.
+
 Uninstall asks whether to restore the power settings rather than doing it silently, because
 "leave my machine configured this way, just remove the shortcut" is a legitimate answer.

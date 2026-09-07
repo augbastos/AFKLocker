@@ -96,7 +96,14 @@ namespace AFKLocker.Core
         StopFailed,
 
         /// <summary>The helper could not reserve the chosen key combination.</summary>
-        HotkeyUnavailable
+        HotkeyUnavailable,
+
+        /// <summary>
+        /// Asked from a process running as administrator. The helper would
+        /// inherit the token, so the background features are not managed from
+        /// there at all.
+        /// </summary>
+        RequiresStandardUser
     }
 
     /// <summary>
@@ -293,9 +300,21 @@ namespace AFKLocker.Core
         private readonly IAutostartRegistry _autostart;
         private readonly IWatcherProcess _watcher;
         private readonly string _watcherPath;
+        private readonly Func<bool> _isElevated;
 
         public AutoLockManager(ISettingsStore settings, IAutostartRegistry autostart,
             IWatcherProcess watcher, string watcherPath)
+            : this(settings, autostart, watcher, watcherPath, null)
+        {
+        }
+
+        /// <summary>
+        /// The elevation check is a parameter only so the refusal can be tested
+        /// without running the test suite as administrator. Passing null uses
+        /// the real token.
+        /// </summary>
+        public AutoLockManager(ISettingsStore settings, IAutostartRegistry autostart,
+            IWatcherProcess watcher, string watcherPath, Func<bool> isElevated)
         {
             if (settings == null) throw new ArgumentNullException("settings");
             if (autostart == null) throw new ArgumentNullException("autostart");
@@ -304,6 +323,23 @@ namespace AFKLocker.Core
             _autostart = autostart;
             _watcher = watcher;
             _watcherPath = watcherPath;
+            _isElevated = isElevated ?? new Func<bool>(WatcherController.CurrentProcessIsElevated);
+        }
+
+        /// <summary>
+        /// True when the background features must not be touched from here.
+        ///
+        /// Setup can be relaunched as administrator, because some power settings
+        /// need it. A helper started from that process would inherit the token,
+        /// and <see cref="WatcherController.Start"/> refuses to do it - but a
+        /// refusal arriving mid-transaction would be read as "automatic mode is
+        /// broken" and stood the machine down, switching off features the user
+        /// had asked for. So the whole subsystem steps aside instead: an
+        /// elevated Setup exists for power configuration and nothing else.
+        /// </summary>
+        public bool RequiresStandardUser
+        {
+            get { return _isElevated(); }
         }
 
         private bool WatcherInstalled
@@ -377,6 +413,17 @@ namespace AFKLocker.Core
         public AutoLockResult Apply(AutoLockSettings desired)
         {
             if (desired == null) throw new ArgumentNullException("desired");
+
+            // First, before any state is read or written. Every switch reaches
+            // here, so one check keeps an elevated Setup from changing the
+            // background features at all - including the stand-down path, which
+            // would otherwise let an elevated window switch off features it is
+            // not allowed to switch back on.
+            if (RequiresStandardUser)
+                return new AutoLockResult(false, AutoLockFailure.RequiresStandardUser,
+                    "AFKLocker Setup is running as administrator, and the background helper must "
+                    + "never run elevated. Nothing was changed. Close this window and open "
+                    + "AFKLocker Setup normally to change these.", false, null);
 
             // Checked before anything else, and deliberately before the
             // stand-down branch below. An unusable key contributes no feature,
@@ -723,6 +770,14 @@ namespace AFKLocker.Core
         /// </summary>
         public AutoLockResult Reconcile()
         {
+            // An elevated Setup repairs nothing. It could not start a helper
+            // anyway, and the repair path falls back to switching the features
+            // off when it cannot - so reconciling from here would quietly undo
+            // the user's configuration for no reason other than which window
+            // they happened to open. Leaving the state alone is always
+            // recoverable; the next ordinary Setup run repairs it.
+            if (RequiresStandardUser) return AutoLockResult.Ok();
+
             // Read strictly, not through GetSettings. Reconciliation is the one
             // caller that both reads the settings and writes them back, so a
             // read that quietly became "the defaults" would let it erase the

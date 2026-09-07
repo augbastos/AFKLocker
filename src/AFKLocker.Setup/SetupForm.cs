@@ -42,6 +42,14 @@ namespace AFKLocker.Setup
         private readonly IBackupStore _backups;
         private readonly AutoLockManager _autoLock;
 
+        /// <summary>
+        /// True in the window that was relaunched as administrator, which exists
+        /// only to write power settings. Read once: it cannot change while the
+        /// window is open, and the background features are off-limits here
+        /// because a helper started from this process would inherit the token.
+        /// </summary>
+        private readonly bool _elevated;
+
         private readonly Label _readinessHeader = new Label();
         private readonly Label _planLabel = new Label();
         private readonly Panel _checksPanel = new Panel();
@@ -91,6 +99,7 @@ namespace AFKLocker.Setup
             _info = info;
             _backups = backups;
             _autoLock = autoLock;
+            _elevated = autoLock.RequiresStandardUser;
 
             BuildLayout();
             _batteryCheck.Checked = preselectBattery;
@@ -447,6 +456,17 @@ namespace AFKLocker.Setup
 
         // ------------------------------------------------------------ lock mode ---
 
+        /// <summary>
+        /// Shown in place of the mode and hotkey status in the elevated window.
+        /// The controls are switched off rather than left clickable: they cannot
+        /// do anything here, and a control that fails when pressed is worse than
+        /// one that says why it is unavailable.
+        /// </summary>
+        private const string ElevatedNote =
+            "Unavailable while running as administrator - the background helper must never run "
+            + "elevated. Close this window and open AFKLocker Setup normally to change this. "
+            + "Whatever is set now keeps working.";
+
         private void RefreshLockBehaviour()
         {
             AutoLockStatus status = _autoLock.GetStatus();
@@ -456,21 +476,25 @@ namespace AFKLocker.Setup
             _automaticRadio.Checked = status.Mode == LockMode.Automatic;
             _updatingMode = false;
 
-            _automaticRadio.Enabled = status.WatcherInstalled;
-            _watcherStatus.Text = DescribeWatcher(status);
+            _manualRadio.Enabled = !_elevated;
+            _automaticRadio.Enabled = status.WatcherInstalled && !_elevated;
+            _watcherStatus.Text = _elevated ? ElevatedNote : DescribeWatcher(status);
 
             // Red whenever automatic mode is on but will not actually lock:
             // the watcher is not ready, the configuration disagrees with
             // reality, or the machine reports no lid at all.
             // Not gated on HelperRequired: "nothing needs a helper, but a
             // sign-in entry is still there" is exactly a state worth colouring.
-            bool wontWork = !status.IsConsistent
-                || (status.HelperRequired
-                    && (!status.WatcherReady
-                        || (status.Mode == LockMode.Automatic
-                            && _report != null
-                            && AutoLockAdvisor.Evaluate(status.Mode, _report.Snapshot)
-                               == AutoLockWarning.NoLidReported)));
+            // Never in the elevated window: it does not reconcile, so what it
+            // would be colouring is its own refusal to touch anything.
+            bool wontWork = !_elevated
+                && (!status.IsConsistent
+                    || (status.HelperRequired
+                        && (!status.WatcherReady
+                            || (status.Mode == LockMode.Automatic
+                                && _report != null
+                                && AutoLockAdvisor.Evaluate(status.Mode, _report.Snapshot)
+                                   == AutoLockWarning.NoLidReported))));
 
             _watcherStatus.ForeColor = wontWork
                 ? Color.FromArgb(196, 43, 28)
@@ -488,9 +512,16 @@ namespace AFKLocker.Setup
             _hotkeyBox.SetBindingQuietly(status.Hotkey);
             _loading = false;
 
-            _hotkeyCheck.Enabled = status.WatcherInstalled;
-            _hotkeyBox.Enabled = status.WatcherInstalled;
-            _hotkeyClear.Enabled = status.WatcherInstalled && !status.Hotkey.IsEmpty;
+            _hotkeyCheck.Enabled = status.WatcherInstalled && !_elevated;
+            _hotkeyBox.Enabled = status.WatcherInstalled && !_elevated;
+            _hotkeyClear.Enabled = status.WatcherInstalled && !_elevated && !status.Hotkey.IsEmpty;
+
+            if (_elevated)
+            {
+                _hotkeyStatus.Text = ElevatedNote;
+                _hotkeyStatus.ForeColor = Color.FromArgb(94, 94, 94);
+                return;
+            }
 
             if (!status.WatcherInstalled)
             {
