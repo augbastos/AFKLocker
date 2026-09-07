@@ -292,10 +292,16 @@ to pretend otherwise.
 Specific to automatic mode:
 
 - **Automatic lock needs a machine that reports lid events.** Windows only delivers them "until a
-  lid device is found and its current state is known" - so on a desktop, or hardware that does not
-  report a lid, nothing will ever fire. AFKLocker cannot detect that up front: registration
-  succeeds either way. If you switch it on and closing the lid does nothing, that is what
-  happened.
+  lid device is found and its current state is known" - so on a desktop, or a machine whose lid
+  device is disabled, nothing will ever fire. Setup detects this and says so, because the failure
+  is otherwise invisible: the watcher reports itself as perfectly healthy and simply never does
+  anything.
+
+  The usual cause on a laptop is the **ACPI Lid** device being disabled in Device Manager (under
+  *System devices*). Disabling it is an old trick for stopping a laptop sleeping when the lid
+  closes - which AFKLocker makes unnecessary, since it configures the lid action properly instead.
+  Enabling it again is safe once the lid action is "Do nothing", and it is what makes automatic
+  lock possible.
 - **The watcher lives in your session.** It starts at sign-in and ends at sign-out. It does not
   run at the lock screen before you have signed in, and it does not cover other users - each
   signed-in user gets their own, or none.

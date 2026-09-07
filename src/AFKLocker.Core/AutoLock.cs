@@ -79,6 +79,74 @@ namespace AFKLocker.Core
         IgnoredSessionAlreadyLocked
     }
 
+    /// <summary>Something the user should be told about automatic locking.</summary>
+    public enum AutoLockWarning
+    {
+        None,
+
+        /// <summary>
+        /// Windows reports no lid device, so lid events will never arrive and
+        /// automatic locking cannot fire. Usually the ACPI Lid device has been
+        /// disabled - a common trick for stopping a laptop sleeping on lid
+        /// close, which this makes redundant and actively harmful.
+        /// </summary>
+        NoLidReported,
+
+        /// <summary>
+        /// Locking will work, but Windows may sleep afterwards on battery
+        /// because the battery settings were left alone.
+        /// </summary>
+        BatteryMaySleep
+    }
+
+    /// <summary>
+    /// Works out what is worth warning about when automatic locking is on.
+    ///
+    /// This exists because "the watcher is running" is not the same as "closing
+    /// the lid will lock". A machine whose lid device is disabled reports a
+    /// perfectly healthy watcher and then does nothing at all, which is the
+    /// worst kind of failure: silent, and indistinguishable from working.
+    /// </summary>
+    public static class AutoLockAdvisor
+    {
+        public static AutoLockWarning Evaluate(LockMode mode, PowerSnapshot snapshot)
+        {
+            if (mode != LockMode.Automatic || snapshot == null)
+                return AutoLockWarning.None;
+
+            SystemCapabilities caps = snapshot.Capabilities;
+            if (caps != null && !caps.LidPresent)
+                return AutoLockWarning.NoLidReported;
+
+            SettingValue lid = snapshot[PowerSettings.LidCloseDc];
+            SettingValue sleep = snapshot[PowerSettings.SleepDc];
+            bool batteryKeepsRunning =
+                (!lid.IsPresent || lid.Is((uint)LidAction.DoNothing)) &&
+                (!sleep.IsPresent || sleep.Is(0));
+
+            return batteryKeepsRunning ? AutoLockWarning.None : AutoLockWarning.BatteryMaySleep;
+        }
+
+        /// <summary>The sentence to show, or null when there is nothing to say.</summary>
+        public static string Describe(AutoLockWarning warning)
+        {
+            switch (warning)
+            {
+                case AutoLockWarning.NoLidReported:
+                    return "This machine does not report lid state to Windows, so closing the lid "
+                           + "will not lock it. Check whether the \"ACPI Lid\" device is disabled "
+                           + "in Device Manager (System devices) and enable it.";
+
+                case AutoLockWarning.BatteryMaySleep:
+                    return "Automatic lock will still work on battery, but Windows may sleep after "
+                           + "the lid closes unless you also configure battery above.";
+
+                default:
+                    return null;
+            }
+        }
+    }
+
     /// <summary>
     /// Decides whether a lid event should lock the session.
     ///

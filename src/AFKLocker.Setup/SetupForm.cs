@@ -333,7 +333,16 @@ namespace AFKLocker.Setup
 
             _automaticRadio.Enabled = status.WatcherInstalled;
             _watcherStatus.Text = DescribeWatcher(status);
-            _watcherStatus.ForeColor = status.Mode == LockMode.Automatic && !status.WatcherRunning
+
+            // Red for the two cases where automatic mode is on but will not
+            // actually lock: no watcher, or a machine that reports no lid.
+            bool wontWork = status.Mode == LockMode.Automatic
+                && (!status.WatcherRunning
+                    || (_report != null
+                        && AutoLockAdvisor.Evaluate(status.Mode, _report.Snapshot)
+                           == AutoLockWarning.NoLidReported));
+
+            _watcherStatus.ForeColor = wontWork
                 ? Color.FromArgb(196, 43, 28)
                 : Color.FromArgb(94, 94, 94);
         }
@@ -352,18 +361,14 @@ namespace AFKLocker.Setup
                 : "Watcher: not running, although automatic mode is on. Select Manual and then "
                   + "Automatic again to restart it.");
 
-            // The two responsibilities are separate, and saying so is the point:
-            // automatic locking works regardless of the power settings, but the
-            // machine may still sleep afterwards on battery.
+            // "The watcher is running" is not the same as "closing the lid will
+            // lock". Anything that stands between the two gets said here.
             if (_report != null)
             {
-                ReadinessCheck battery = _report.Find(ReadinessEvaluator.BatteryCheckId);
-                if (battery != null && battery.Status == CheckStatus.Optional
-                    && battery.Detail.IndexOf("On battery,", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    text.Append("\r\nAutomatic lock will still work on battery, but Windows may sleep "
-                                + "after the lid closes unless you also configure battery above.");
-                }
+                string advice = AutoLockAdvisor.Describe(
+                    AutoLockAdvisor.Evaluate(status.Mode, _report.Snapshot));
+                if (advice != null)
+                    text.Append("\r\n" + advice);
             }
 
             return text.ToString();

@@ -191,6 +191,74 @@ namespace AFKLocker.Tests
         }
     }
 
+    internal static class AutoLockAdvisorTests
+    {
+        [Test("Manual mode is never warned about")]
+        private static void ManualSaysNothing()
+        {
+            PowerSnapshot snapshot = SnapshotBuilder.ReadyLaptop();
+            snapshot.Capabilities.LidPresent = false;
+
+            Assert.Equal(AutoLockWarning.None,
+                AutoLockAdvisor.Evaluate(LockMode.Manual, snapshot),
+                "nothing is running in manual mode, so there is nothing to warn about");
+        }
+
+        [Test("A machine that reports no lid is called out, because it will silently never lock")]
+        private static void NoLidIsWarned()
+        {
+            PowerSnapshot snapshot = SnapshotBuilder.ReadyLaptop();
+            snapshot.Capabilities.LidPresent = false;
+
+            AutoLockWarning warning = AutoLockAdvisor.Evaluate(LockMode.Automatic, snapshot);
+
+            Assert.Equal(AutoLockWarning.NoLidReported, warning, "the important one");
+            Assert.True(AutoLockAdvisor.Describe(warning).Contains("ACPI Lid"),
+                "and it names the device to check, rather than just saying it will not work");
+        }
+
+        [Test("No lid outranks the battery note - it stops locking entirely")]
+        private static void NoLidTakesPriority()
+        {
+            PowerSnapshot snapshot = SnapshotBuilder.ReadyLaptop();   // battery sleeps after 30 min
+            snapshot.Capabilities.LidPresent = false;
+
+            Assert.Equal(AutoLockWarning.NoLidReported,
+                AutoLockAdvisor.Evaluate(LockMode.Automatic, snapshot),
+                "a machine that cannot lock at all is the bigger problem");
+        }
+
+        [Test("A machine that sleeps on battery gets the battery note")]
+        private static void BatterySleepIsWarned()
+        {
+            AutoLockWarning warning = AutoLockAdvisor.Evaluate(
+                LockMode.Automatic, SnapshotBuilder.ReadyLaptop());
+
+            Assert.Equal(AutoLockWarning.BatteryMaySleep, warning, "battery note");
+            Assert.True(AutoLockAdvisor.Describe(warning).Contains("battery"), "mentions battery");
+        }
+
+        [Test("A machine configured for battery too gets no warning at all")]
+        private static void FullyConfiguredIsSilent()
+        {
+            PowerSnapshot snapshot = SnapshotBuilder.ReadyLaptop();
+            snapshot[PowerSettings.LidCloseDc] = SettingValue.Of((uint)LidAction.DoNothing);
+            snapshot[PowerSettings.SleepDc] = SettingValue.Of(0);
+
+            Assert.Equal(AutoLockWarning.None,
+                AutoLockAdvisor.Evaluate(LockMode.Automatic, snapshot), "nothing to say");
+            Assert.Null(AutoLockAdvisor.Describe(AutoLockWarning.None), "and no text for it");
+        }
+
+        [Test("A null snapshot produces no warning rather than an exception")]
+        private static void NullSnapshotIsSafe()
+        {
+            Assert.Equal(AutoLockWarning.None,
+                AutoLockAdvisor.Evaluate(LockMode.Automatic, null),
+                "the window must still open when power settings cannot be read");
+        }
+    }
+
     internal static class AutoLockSettingsTests
     {
         [Test("Manual is the default when no settings have ever been saved")]
