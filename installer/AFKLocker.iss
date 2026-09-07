@@ -9,7 +9,7 @@
 ; Expects the compiled binaries in build\ (run tools\Build.ps1 first).
 
 #define AppName        "AFKLocker"
-#define AppVersion     "0.2.2"
+#define AppVersion     "0.3.0"
 #define AppPublisher   "Augusto Bastos"
 #define AppUrl         "https://github.com/augbastos/AFKLocker"
 #define AppExe         "AFKLocker.exe"
@@ -42,6 +42,9 @@ PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=6.3
 AppCopyright=Copyright (C) 2026 {#AppPublisher}
+; Makes Setup notify the shell after installing and uninstalling, so the
+; right-click entry below appears and disappears without restarting Explorer.
+ChangesAssociations=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -64,6 +67,23 @@ Name: "{group}\{#AppName}";       Filename: "{app}\{#AppExe}";   Comment: "Lock 
 Name: "{group}\{#AppName} Setup"; Filename: "{app}\{#SetupExe}"; Comment: "Check and configure Windows power settings"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}";   Comment: "Lock this PC and keep it running"; Tasks: desktopicon
 Name: "{autodesktop}\{#AppName} Display Off"; Filename: "{app}\{#AppExe}"; Parameters: "--display-off"; Comment: "Turn the display off without locking"; Tasks: displayoff
+
+[Registry]
+; Adds "AFKLocker Setup" to the right-click menu of the AFKLocker shortcut, so
+; the settings window is one click away instead of a trip to the Start menu.
+;
+; AppliesTo is what keeps this out of every other shortcut's menu: without it,
+; a verb on lnkfile would appear on every shortcut the user owns. Filtering by
+; file name is not elegant, but it is what actually works here - filtering by
+; the shortcut's resolved target (System.Link.TargetParsingPath) was tried and
+; silently matches nothing. The wildcard means renaming the shortcut, or having
+; a second copy, still shows the entry.
+;
+; HKA so a per-user install writes HKCU and an all-users install writes HKLM.
+Root: HKA; Subkey: "Software\Classes\lnkfile\shell\AFKLockerSetup"; ValueType: string; ValueName: ""; ValueData: "AFKLocker Setup"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\lnkfile\shell\AFKLockerSetup"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#SetupExe},0"
+Root: HKA; Subkey: "Software\Classes\lnkfile\shell\AFKLockerSetup"; ValueType: string; ValueName: "AppliesTo"; ValueData: "System.FileName:""AFKLocker*"""
+Root: HKA; Subkey: "Software\Classes\lnkfile\shell\AFKLockerSetup\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#SetupExe}"""
 
 [Run]
 ; Opening setup after install is the honest default: AFKLocker is not useful
