@@ -26,6 +26,14 @@ This project follows [Semantic Versioning](https://semver.org/).
   is what makes "never elevated" a property of the program rather than of its
   callers, and it covers all three.
 
+  The question it asks is "was this process raised above the token it would
+  ordinarily have", not "is this an administrator". The difference matters on a
+  machine with UAC switched off and under the built-in Administrator account,
+  where every process carries the administrator token — including the helper the
+  user starts themselves. Asking the second question there would refuse a launch
+  that is not an escalation at all, and the background features would stop
+  working with no way to switch them back on.
+
 - **That refusal would have switched off features the user had chosen.**
   Reconciliation repairs a broken state by re-applying the stored settings, and
   when it cannot, it converges to manual and clean. A refusal arriving in the

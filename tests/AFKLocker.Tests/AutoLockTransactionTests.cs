@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using AFKLocker.Core;
 
@@ -18,7 +18,8 @@ namespace AFKLocker.Tests
         private static AutoLockManager Manager(FakeSettingsStore settings, FakeAutostartRegistry autostart,
             FakeWatcherProcess watcher)
         {
-            return new AutoLockManager(settings, autostart, watcher, ExistingWatcher);
+            return new AutoLockManager(settings, autostart, watcher, ExistingWatcher,
+                TestElevation.No);
         }
 
         private static void AssertCleanManual(FakeSettingsStore settings, FakeAutostartRegistry autostart,
@@ -53,7 +54,7 @@ namespace AFKLocker.Tests
             var watcher = new FakeWatcherProcess();
 
             AutoLockResult result = new AutoLockManager(settings, autostart, watcher,
-                @"Z:\does\not\exist.exe").Enable();
+                @"Z:\does\not\exist.exe", TestElevation.No).Enable();
 
             Assert.False(result.Success, "reports failure");
             Assert.Equal(AutoLockFailure.WatcherMissing, result.Failure, "named failure");
@@ -520,7 +521,7 @@ namespace AFKLocker.Tests
             var watcher = new FakeWatcherProcess();
 
             AutoLockResult result = new AutoLockManager(settings, autostart, watcher,
-                @"Z:\gone.exe").Reconcile();
+                @"Z:\gone.exe", TestElevation.No).Reconcile();
 
             Assert.False(result.Success, "reports it");
             Assert.Equal(AutoLockFailure.WatcherMissing, result.Failure, "named failure");
