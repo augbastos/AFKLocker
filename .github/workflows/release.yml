@@ -9,22 +9,59 @@ on:
         description: 'Tag to build and publish (e.g. v0.1.0)'
         required: true
 
+# Read-only by default; the job below asks for exactly what it needs.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Build and publish
+  build:
+    name: Build, sign and package
     runs-on: windows-latest
+    permissions:
+      contents: write      # creating the release and uploading its assets
+      id-token: write      # provenance attestation signing
+      attestations: write  # recording the attestation
 
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to immutable commit SHAs: a tag can be repointed at other code.
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
+          persist-credentials: false
 
-      - name: Build, test and package
+      # Decided in one place so later steps can branch on it without touching
+      # the secrets themselves.
+      - name: Determine whether signing is configured
+        id: signing
+        shell: pwsh
+        env:
+          SIGNING_CERTIFICATE: ${{ secrets.AFKLOCKER_SIGNING_CERTIFICATE }}
+        run: |
+          $configured = -not [string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE)
+          "enabled=$($configured.ToString().ToLower())" | Out-File $env:GITHUB_OUTPUT -Append
+          Write-Host ("Code signing: {0}" -f ($configured ? "enabled" : "not configured - publishing unsigned"))
+
+      # Unsigned path. No signing secrets are referenced, so they are not
+      # present in this step's environment at all.
+      - name: Build, test and package (unsigned)
+        if: steps.signing.outputs.enabled != 'true'
         shell: pwsh
         run: ./tools/Build.ps1 -Test -Installer -Iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+
+      # Signed path. The secrets are scoped to this single step, and
+      # -RequireSigning turns any signing problem into a failed release rather
+      # than a silently unsigned one.
+      - name: Build, test and package (signed)
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          AFKLOCKER_SIGNING_CERTIFICATE: ${{ secrets.AFKLOCKER_SIGNING_CERTIFICATE }}
+          AFKLOCKER_SIGNING_PASSWORD: ${{ secrets.AFKLOCKER_SIGNING_PASSWORD }}
+          AFKLOCKER_SIGNING_TIMESTAMP_URL: ${{ vars.AFKLOCKER_SIGNING_TIMESTAMP_URL }}
+        run: >
+          ./tools/Build.ps1 -Test -Installer -RequireSigning
+          -Iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
       - name: Assemble release assets
         shell: pwsh
@@ -47,8 +84,20 @@ jobs:
 
           Get-Content dist/SHA256SUMS.txt
 
+      # Lets anyone verify these exact files were produced by this workflow,
+      # from this repository, at this commit - independently of whether an
+      # Authenticode certificate is configured.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be  # v2
+        with:
+          subject-path: |
+            dist/AFKLocker-*-setup.exe
+            dist/AFKLocker-*-portable.zip
+
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           draft: false

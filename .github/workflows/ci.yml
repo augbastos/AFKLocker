@@ -7,6 +7,7 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Read-only by default. Any job needing more asks for it explicitly.
 permissions:
   contents: read
 
@@ -14,10 +15,19 @@ jobs:
   build:
     name: Build and test
     runs-on: windows-latest
+    permissions:
+      contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      # Third-party actions are pinned to an immutable commit SHA, not a tag.
+      # A tag can be moved to point at different code; a SHA cannot.
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
 
+      # No signing in CI: nothing is published from here, so the signing
+      # secrets are not needed and are therefore not exposed.
       - name: Build and run tests
         shell: pwsh
         run: ./tools/Build.ps1 -Test
@@ -41,7 +51,7 @@ jobs:
         run: ./tools/Build.ps1 -Installer -Iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
       - name: Upload build output
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: afklocker-build
           path: |
