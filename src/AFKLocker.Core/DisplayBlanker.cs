@@ -49,6 +49,46 @@ namespace AFKLocker.Core
     }
 
     /// <summary>
+    /// The "somebody is here, leave the screen alone" window.
+    ///
+    /// Extracted from <see cref="DisplayBlanker"/> for one reason: the decision
+    /// it makes is about time, and time was the one thing in this class no test
+    /// could reach. It takes "now" as an argument rather than reading the clock,
+    /// so a test can walk it through ninety seconds in three lines - and it is a
+    /// struct with three methods rather than an IClock threaded through the
+    /// project, because that is all this needed.
+    /// </summary>
+    public struct DisplayGrace
+    {
+        private DateTime _until;
+
+        /// <summary>Starts the window again from scratch, however many times it is called.</summary>
+        public void Begin(DateTime now, TimeSpan window)
+        {
+            _until = now + window;
+        }
+
+        /// <summary>Ends it immediately, whatever was left.</summary>
+        public void End()
+        {
+            _until = DateTime.MinValue;
+        }
+
+        /// <summary>True while the screen must be left alone.</summary>
+        public bool Blocks(DateTime now)
+        {
+            return now < _until;
+        }
+
+        /// <summary>How much is left, or zero. Used to re-arm a timer for exactly the remainder.</summary>
+        public TimeSpan Remaining(DateTime now)
+        {
+            TimeSpan left = _until - now;
+            return left > TimeSpan.Zero ? left : TimeSpan.Zero;
+        }
+    }
+
+    /// <summary>
     /// The last keyboard or mouse input Windows attributes to this session.
     ///
     /// Behind an interface because the whole point of reading it is to stop
@@ -127,6 +167,12 @@ namespace AFKLocker.Core
         private int _requests;
         private bool _stopped;
 
+        /// <summary>
+        /// True once the screen has actually been dark. Until then, input cannot
+        /// mean "somebody woke it" - there was nothing to wake.
+        /// </summary>
+        private bool _reachedDarkness;
+
         public DisplayBlankPolicy(uint inputAtStart)
             : this(inputAtStart, DefaultMaxRequests)
         {
@@ -179,10 +225,20 @@ namespace AFKLocker.Core
             // it and walks away without signing in would leave it lit for good.
             // Waiting covers both people - the one about to type their password,
             // and the one who changed their mind.
+            //
+            // But it only means that once the screen has actually been dark.
+            // Before then the most recent input IS the click or key that locked
+            // the machine, so treating it as somebody arriving would start a
+            // ninety-second pause against the very action that asked for the
+            // screen to go out.
+            //
+            // Opening the lid is handled separately and defers regardless,
+            // because that one is unambiguous - nobody opens a laptop by
+            // accident on their way out of the room.
             if (lastInputTick != _lastInput)
             {
                 _lastInput = lastInputTick;
-                return BlankAction.Defer;
+                if (_reachedDarkness) return BlankAction.Defer;
             }
 
             // Off or dimmed is the goal, not a problem to solve. Reaching it
@@ -192,6 +248,7 @@ namespace AFKLocker.Core
             if (state != DisplayState.On)
             {
                 _requests = 0;
+                _reachedDarkness = true;
                 return BlankAction.Nothing;
             }
 
@@ -406,8 +463,8 @@ namespace AFKLocker.Core
         private DisplayState _lastState = DisplayState.On;
         private DateTime _startedAt = DateTime.UtcNow;
 
-        /// <summary>Until when the screen is off-limits because somebody is here.</summary>
-        private DateTime _graceUntil = DateTime.MinValue;
+        /// <summary>While this blocks, the screen is off-limits because somebody is here.</summary>
+        private DisplayGrace _grace;
 
         public DisplayBlanker(IDisplayController displays, IUserInputMonitor input)
             : this(displays, input, DefaultTimeLimit)
@@ -462,7 +519,7 @@ namespace AFKLocker.Core
             // had already stopped - and the manual lock skips its message loop
             // on exactly that claim.
             _finished = false;
-            _graceUntil = DateTime.MinValue;
+            _grace.End();
             _backingOff = false;
             _stateKnown = false;
 
@@ -511,7 +568,12 @@ namespace AFKLocker.Core
             };
             _verify.Start();
 
-            Apply(_policy.Begin());
+            // Deliberately not through Apply. Every later TurnOff waits out the
+            // settle delay, because it is answering a display reconfiguration
+            // that is still in progress. This one is answering the lock itself,
+            // and a second of lit screen right after the click is precisely what
+            // people notice.
+            if (_policy.Begin() == BlankAction.TurnOff) RequestOff();
 
             if (!registered)
             {
@@ -569,41 +631,7 @@ namespace AFKLocker.Core
         {
             if (!_running) return;
 
-            BlankAction action = _policy.HandleDisplayState(state, _sessionLocked, SafeLastInput());
-
-            if (action == BlankAction.TurnOff)
-            {
-                // Deliberately not immediate: the display coming back on is the
-                // middle of a reconfiguration, not the end of one.
-                _backingOff = false;
-                Rearm(CurrentSettleDelay);
-                return;
-            }
-
-            if (action == BlankAction.Defer)
-            {
-                // Somebody is at the machine. Hands off the screen entirely for
-                // a while, and restart that from scratch however many times they
-                // touch it.
-                _backingOff = false;
-                _graceUntil = DateTime.UtcNow + WakeGrace;
-                Rearm(WakeGrace);
-                return;
-            }
-
-            if (action == BlankAction.BackOff)
-            {
-                // Already waiting out a slow retry: leave the countdown alone.
-                // Restarting it every time the display reports itself on is how
-                // a long timer never fires at all.
-                if (_backingOff) return;
-
-                _backingOff = true;
-                Rearm(RetryDelay);
-                return;
-            }
-
-            Apply(action);
+            Apply(_policy.HandleDisplayState(state, _sessionLocked, SafeLastInput()));
         }
 
         private void OnLid(LidState state)
@@ -612,15 +640,49 @@ namespace AFKLocker.Core
             Apply(_policy.HandleLid(state));
         }
 
+        /// <summary>
+        /// Carries out one decision. Every decision goes through here.
+        ///
+        /// It handled only TurnOff and Stop while Defer and BackOff were dealt
+        /// with at one of the two call sites, which meant lid-open - the only
+        /// caller that goes straight to Apply - silently did nothing at all. The
+        /// ninety-second pause after opening a laptop was never started, and the
+        /// next timer could darken the screen while somebody was still reaching
+        /// for the keyboard. Two paths for four outcomes was the defect; one path
+        /// is the fix.
+        /// </summary>
         private void Apply(BlankAction action)
         {
-            if (action == BlankAction.TurnOff)
+            switch (action)
             {
-                RequestOff();
-            }
-            else if (action == BlankAction.Stop)
-            {
-                Stop();
+                case BlankAction.TurnOff:
+                    // Deliberately not immediate: the display coming back on is
+                    // the middle of a reconfiguration, not the end of one.
+                    _backingOff = false;
+                    Rearm(CurrentSettleDelay);
+                    break;
+
+                case BlankAction.Defer:
+                    // Somebody is at the machine. Hands off the screen entirely
+                    // for a while, restarted from scratch however many times they
+                    // touch it or move the lid.
+                    _backingOff = false;
+                    _grace.Begin(DateTime.UtcNow, WakeGrace);
+                    Rearm(WakeGrace);
+                    break;
+
+                case BlankAction.BackOff:
+                    // Already waiting out a slow retry: leave the countdown
+                    // alone. Restarting it every time the display reports itself
+                    // on is how a long timer never fires at all.
+                    if (_backingOff) break;
+                    _backingOff = true;
+                    Rearm(RetryDelay);
+                    break;
+
+                case BlankAction.Stop:
+                    Stop();
+                    break;
             }
         }
 
@@ -631,10 +693,10 @@ namespace AFKLocker.Core
             // any of them could otherwise darken the screen of somebody who has
             // just opened the lid. Checking here rather than at each caller is
             // what makes that impossible rather than merely unlikely.
-            TimeSpan remaining = _graceUntil - DateTime.UtcNow;
-            if (remaining > TimeSpan.Zero)
+            DateTime now = DateTime.UtcNow;
+            if (_grace.Blocks(now))
             {
-                Rearm(remaining);
+                Rearm(_grace.Remaining(now));
                 return;
             }
 

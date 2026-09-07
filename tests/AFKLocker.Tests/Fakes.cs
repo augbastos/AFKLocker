@@ -24,6 +24,32 @@ namespace AFKLocker.Tests
         /// <summary>When set, every write fails with this error code.</summary>
         public int WriteFailsWithErrorCode;
 
+        /// <summary>
+        /// Setting keys whose write throws an unexpected error - the kind that
+        /// used to leave earlier writes applied with nobody putting them back.
+        /// Keyed by setting so a failure can be aimed at a chosen point in a plan.
+        /// </summary>
+        public readonly HashSet<string> WritesThatFail = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Keys whose write fails only while it is being put back.</summary>
+        public readonly HashSet<string> RollbacksThatFail = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>When set, activating the scheme throws with this message.</summary>
+        public string ApplySchemeFailsWith;
+
+        /// <summary>
+        /// How many activations should fail. One means "fail the apply, then let
+        /// the rollback's activation succeed", which is how a clean rollback
+        /// after an activation failure gets tested at all.
+        /// </summary>
+        public int ApplySchemeFailures = int.MaxValue;
+
+        /// <summary>Values as they were before the apply under test, for comparison.</summary>
+        public Dictionary<string, uint> Snapshot()
+        {
+            return new Dictionary<string, uint>(_values, StringComparer.OrdinalIgnoreCase);
+        }
+
         public int ApplySchemeCallCount;
         public readonly List<string> Writes = new List<string>();
 
@@ -100,13 +126,33 @@ namespace AFKLocker.Tests
             if (WriteFailsWithErrorCode != 0)
                 throw new PowerConfigurationException("Fake write failure.", WriteFailsWithErrorCode);
 
+            // A rollback writes the ORIGINAL value back, so "is this a rollback"
+            // is decided by which set the caller armed, not by guessing.
+            bool restoring = _applied.Contains(name);
+
+            if (!restoring && WritesThatFail.Contains(name))
+                throw new InvalidOperationException("Fake unexpected failure writing " + name + ".");
+
+            if (restoring && RollbacksThatFail.Contains(name))
+                throw new InvalidOperationException("Fake failure putting " + name + " back.");
+
             Writes.Add(name + "=" + value);
             _values[Key(scheme, subgroup, setting, source)] = value;
+
+            if (restoring) _applied.Remove(name);
+            else _applied.Add(name);
         }
+
+        private readonly HashSet<string> _applied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         public void ApplyScheme(Guid scheme)
         {
             ApplySchemeCallCount++;
+            if (ApplySchemeFailsWith != null && ApplySchemeFailures > 0)
+            {
+                ApplySchemeFailures--;
+                throw new InvalidOperationException(ApplySchemeFailsWith);
+            }
         }
     }
 

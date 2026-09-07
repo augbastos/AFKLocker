@@ -26,6 +26,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # The version lives in three files. Bumping two of the three is an
+      # ordinary slip and produces an installer whose file name, Programs and
+      # Features entry and About text disagree, so it is checked rather than
+      # remembered.
+      - name: Check versions agree
+        shell: pwsh
+        run: ./tools/Check-Version.ps1
+
       # No signing in CI: nothing is published from here, so the signing
       # secrets are not needed and are therefore not exposed.
       - name: Build and run tests
