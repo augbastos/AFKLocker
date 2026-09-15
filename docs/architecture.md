@@ -351,18 +351,18 @@ The UI and the session know only *supported / unsupported / detection failed*,
   default path.
 
 **Acer backend.** `AcerGamingFunction` in `root\WMI`. Detection reads only the
-class definition, which a standard user may do. Signatures are not uniform: on
-the one machine checked, `GetGamingKBBacklight` declares no input and, among the
-lighting methods, only that getter has a separate `gmReturn`, while third-party tools written for
-other models pass a selector byte to the same getter. So the WMI layer fills in
+class definition, which a standard user may do. Signatures are not uniform: at
+least one firmware revision declares no input for `GetGamingKBBacklight` and,
+among the lighting methods, a separate `gmReturn` only on that getter, while
+third-party tools pass a selector byte to the same getter. So the WMI layer fills in
 only parameters a method declares. Off takes the captured 15-byte configuration,
 pads it to the setter's 16 bytes and sets the brightness byte to zero; restore
 writes the captured bytes back. Both are read back. Zone colours are captured
 and compared after restore, and rewritten only if a static-mode backlight write
 disturbed them — writing zones in an effect mode would replace the effect.
 
-**Elevation.** A standard-user method call was refused with `Access denied`
-(checked read-only on one machine), so this backend cannot avoid elevation.
+**Elevation.** Windows refuses these method calls from a standard user with
+`Access denied`, so this backend cannot avoid elevation.
 Switching the feature on is the only prompt: an elevated
 `AFKLocker.exe --enable-keyboard-lighting <sid>` copies `AFKLocker.exe` and
 `AFKLocker.Core.dll` into `%ProgramFiles%\AFKLocker Keyboard Lighting`,

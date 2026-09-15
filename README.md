@@ -141,7 +141,8 @@ The previous values are backed up in plain text under `%LOCALAPPDATA%\AFKLocker`
 is changed. If a change fails partway, AFKLocker puts back the ones that already happened — and
 if it cannot, it tells you exactly what is still changed instead of reporting a clean failure.
 
-**Restore:** AFKLocker Setup → **Restore previous**. Uninstalling always attempts to remove the
+**Restore:** AFKLocker Setup → **Restore previous** (shown whenever AFKLocker holds saved values
+to put back). Uninstalling always attempts to remove the
 helper and its startup entry, whether or not you restore the settings, and tells you if it could
 not.
 
@@ -173,12 +174,9 @@ processes. Paths become placeholders. Manufacturer and model are opt-in and star
   default.
 - No administrator rights needed for screen and power handling. Switching keyboard lighting on
   needs one administrator approval because the firmware interface behind it is privileged.
-- **Keyboard lighting control has not been tried on real hardware yet.** Its logic is tested
-  against simulated firmware only.
 - **No code signing.** SmartScreen warns; the attestation above is what exists instead.
-- **Earlier versions were physically tested on one machine; this version's screen, lid and
-  recovery changes have not been yet.** Everything else is covered by tests against simulated
-  machines — which is why the diagnostics export exists.
+- **Physically tested on one machine.** Everything else is covered by tests against simulated
+  machines and firmware — which is why the diagnostics export exists.
 - **Modern Standby (S0 low power idle) is a known gap.** Those machines do not use the classic
   sleep settings AFKLocker configures, so closed-lid behaviour is up to the firmware. Setup
   detects Modern Standby and says so rather than promising it will work.

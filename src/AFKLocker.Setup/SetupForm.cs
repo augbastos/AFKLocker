@@ -34,8 +34,8 @@ namespace AFKLocker.Setup
         /// the buttons at the bottom needed scrolling to reach, and the
         /// right-aligned Close ended up colliding with Diagnostics once the
         /// scrollbar took its width. Reading across two columns costs nothing -
-        /// the left side is what this machine is, the right side is what you
-        /// want it to do - and the whole thing fits on screen with no scrolling.
+        /// the left side is how you lock, the right side is what happens while
+        /// you are away - and the whole thing fits on screen with no scrolling.
         /// </summary>
         private const int ColumnWidth = 430;
 
@@ -83,6 +83,11 @@ namespace AFKLocker.Setup
 
         /// <summary>Detected once per window: the hardware does not change while it is open.</summary>
         private KeyboardLightingDetection _lightingDetection;
+
+        /// <summary>Set by Refresh before layout: the power checks only exist in Automatic mode.</summary>
+        private bool _automaticLayout;
+        private bool _hasBackup;
+        private readonly Font _summaryFont = new Font("Segoe UI", 10F, FontStyle.Bold);
 
         /// <summary>What the form last read from disk, so a change can be told from a redraw.</summary>
         private AutoLockSettings _savedSettings = new AutoLockSettings();
@@ -189,7 +194,7 @@ namespace AFKLocker.Setup
                 Location = new Point(EdgeMargin + 2, 52)
             };
 
-            StyleSectionHeader(_readinessHeader, "AUTOMATIC-MODE READINESS");
+            StyleSectionHeader(_readinessHeader, "POWER SETTINGS");
             _planLabel.ForeColor = Color.FromArgb(94, 94, 94);
             _planLabel.AutoSize = true;
 
@@ -204,10 +209,12 @@ namespace AFKLocker.Setup
             _separator.Width = width;
             _separator.Anchor = AnchorStyles.Top | AnchorStyles.Left;
 
-            _summaryLabel.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
+            // Capped to the column: without a width limit this label grew straight
+            // across the gutter and covered the controls in the other column.
             _summaryLabel.AutoSize = true;
+            _summaryLabel.MaximumSize = new Size(width, 0);
 
-            _batteryCheck.Text = "Automatic mode: also keep running on battery";
+            _batteryCheck.Text = "Also keep running on battery";
             _batteryCheck.AutoSize = true;
             _batteryCheck.CheckedChanged += (s, e) => UpdateButtons();
 
@@ -221,17 +228,15 @@ namespace AFKLocker.Setup
             _manualRadio.AutoSize = true;
             _manualRadio.Checked = true;
             _manualRadio.CheckedChanged += OnModeChanged;
-            StyleNote(_manualNote, width - 20, "Double-click AFKLocker before closing the lid. "
-                                               + "Power behaviour changes only during that AFK session "
-                                               + "and is restored when you return.");
+            StyleNote(_manualNote, width - 20, "Double-click AFKLocker when you step away. "
+                                               + "Nothing changes permanently.");
 
             _automaticRadio.Text = "Automatic";
             _automaticRadio.AutoSize = true;
             _automaticRadio.CheckedChanged += OnModeChanged;
             StyleNote(_automaticNote, width - 20,
-                "Lock Windows automatically whenever the laptop lid closes. A small background "
-                + "watcher runs while you are signed in. This mode requires the persistent power "
-                + "configuration shown on the left. Opening the lid never unlocks anything.");
+                "Locks Windows whenever the lid closes. A small helper runs while you are signed in, "
+                + "and the power settings on the right stay applied. Opening the lid never unlocks anything.");
 
             // AutoSize with a width cap, like the other notes. A fixed height
             // silently clipped the longer status messages mid-sentence.
@@ -253,10 +258,8 @@ namespace AFKLocker.Setup
             _hotkeyClear.Click += OnHotkeyClearClicked;
 
             StyleNote(_hotkeyNote, width - 20,
-                "Off by default. Click the box and press the keys you want. Windows tells AFKLocker "
-                + "only when that exact combination is pressed - it never sees anything else you type. "
-                + "A small background helper runs while this is on, because something has to be "
-                + "waiting for the key.");
+                "Click the box and press a combination. Windows tells AFKLocker only about that "
+                + "combination, never anything else you type. A small helper waits for it while this is on.");
 
             _hotkeyStatus.AutoSize = true;
             _hotkeyStatus.MaximumSize = new Size(width - 20, 0);
@@ -269,8 +272,7 @@ namespace AFKLocker.Setup
             _lightingCheck.CheckedChanged += OnLightingChanged;
 
             StyleNote(_lightingNote, width - 20,
-                "Off by default. The lighting goes dark when AFK starts and comes back exactly as it was "
-                + "when you return. AFKLocker detects on its own whether it can control this PC's lighting.");
+                "The lighting goes dark during AFK and comes back exactly as it was when you return.");
 
             _lightingStatus.AutoSize = true;
             _lightingStatus.MaximumSize = new Size(width - 20, 0);
@@ -331,75 +333,61 @@ namespace AFKLocker.Setup
         /// Lays everything out top to bottom. Doing this in code rather than
         /// with fixed coordinates keeps the window correct when a machine
         /// produces an extra check, or a longer message.
+        ///
+        /// Left is how you lock; right is what happens while you are away. The
+        /// readiness checks only exist in Automatic mode: Manual never needs a
+        /// pre-configured power plan, and listing it as "Ready" there only
+        /// suggested a dependency that is not there.
         /// </summary>
         private void PerformVerticalLayout(int checksContentHeight)
         {
             const int MaxChecksHeight = 300;
+            const int SectionGap = 26;
 
             int left = EdgeMargin;
             int right = EdgeMargin + ColumnWidth + ColumnGutter;
-            int top = 88;
+            int top = 92;
+            bool automatic = _automaticLayout;
 
-            // --- left column: what this machine is ---------------------------
+            // --- left column: how you lock ------------------------------------
             int y = top;
 
-            _readinessHeader.Location = new Point(left, y);
-            y = _readinessHeader.Bottom + 8;
-
-            _planLabel.Location = new Point(left, y);
-            y = _planLabel.Bottom + 8;
-
-            _checksPanel.Location = new Point(left, y);
-            _checksPanel.Height = Math.Min(Math.Max(checksContentHeight, 60), MaxChecksHeight);
-            _checksPanel.AutoScroll = checksContentHeight > MaxChecksHeight;
-            y = _checksPanel.Bottom + 10;
-
-            _separator.Location = new Point(left, y);
-            y = _separator.Bottom + 12;
-
-            _summaryLabel.Location = new Point(left, y);
-            y = _summaryLabel.Bottom + 14;
-
-            _batteryCheck.Location = new Point(left + 2, y);
-            y = _batteryCheck.Bottom + 4;
-
-            _batteryNote.Location = new Point(left + 20, y);
-            int leftBottom = _batteryNote.Bottom;
-
-            // --- right column: what you want it to do -------------------------
-            y = top;
-
-            _lockHeader.Location = new Point(right, y);
+            _lockHeader.Location = new Point(left, y);
             y = _lockHeader.Bottom + 10;
 
-            _manualRadio.Location = new Point(right + 2, y);
+            _manualRadio.Location = new Point(left + 2, y);
             y = _manualRadio.Bottom + 2;
-            _manualNote.Location = new Point(right + 20, y);
+            _manualNote.Location = new Point(left + 20, y);
             y = _manualNote.Bottom + 12;
 
-            _automaticRadio.Location = new Point(right + 2, y);
+            _automaticRadio.Location = new Point(left + 2, y);
             y = _automaticRadio.Bottom + 2;
-            _automaticNote.Location = new Point(right + 20, y);
+            _automaticNote.Location = new Point(left + 20, y);
             y = _automaticNote.Bottom + 8;
 
-            _watcherStatus.Location = new Point(right + 20, y);
-            y = _watcherStatus.Bottom + 24;
+            bool watcherLine = _watcherStatus.Text.Length > 0;
+            _watcherStatus.Visible = watcherLine;
+            _watcherStatus.Location = new Point(left + 20, y);
+            y = (watcherLine ? _watcherStatus.Bottom : _automaticNote.Bottom) + SectionGap;
 
-            _hotkeyHeader.Location = new Point(right, y);
+            _hotkeyHeader.Location = new Point(left, y);
             y = _hotkeyHeader.Bottom + 10;
 
-            _hotkeyCheck.Location = new Point(right + 2, y);
+            _hotkeyCheck.Location = new Point(left + 2, y);
             y = _hotkeyCheck.Bottom + 6;
 
-            _hotkeyBox.Location = new Point(right + 20, y);
+            _hotkeyBox.Location = new Point(left + 20, y);
             _hotkeyClear.Location = new Point(_hotkeyBox.Right + 8, y - 1);
             y = _hotkeyBox.Bottom + 6;
 
-            _hotkeyNote.Location = new Point(right + 20, y);
+            _hotkeyNote.Location = new Point(left + 20, y);
             y = _hotkeyNote.Bottom + 6;
 
-            _hotkeyStatus.Location = new Point(right + 20, y);
-            y = _hotkeyStatus.Bottom + 24;
+            _hotkeyStatus.Location = new Point(left + 20, y);
+            int leftBottom = _hotkeyStatus.Bottom;
+
+            // --- right column: while you are away -----------------------------
+            y = top;
 
             _lightingHeader.Location = new Point(right, y);
             y = _lightingHeader.Bottom + 10;
@@ -411,14 +399,60 @@ namespace AFKLocker.Setup
             y = _lightingNote.Bottom + 6;
 
             _lightingStatus.Location = new Point(right + 20, y);
-            int rightBottom = _lightingStatus.Bottom;
+            y = _lightingStatus.Bottom + SectionGap;
+
+            _readinessHeader.Location = new Point(right, y);
+            y = _readinessHeader.Bottom + 8;
+
+            _planLabel.Visible = automatic;
+            _checksPanel.Visible = automatic;
+            _separator.Visible = automatic;
+            _batteryCheck.Visible = automatic;
+            _batteryNote.Visible = automatic;
+
+            if (automatic)
+            {
+                _planLabel.Location = new Point(right, y);
+                y = _planLabel.Bottom + 8;
+
+                _checksPanel.Location = new Point(right, y);
+                _checksPanel.Height = Math.Min(Math.Max(checksContentHeight, 60), MaxChecksHeight);
+                _checksPanel.AutoScroll = checksContentHeight > MaxChecksHeight;
+                y = _checksPanel.Bottom + 10;
+
+                _separator.Location = new Point(right, y);
+                y = _separator.Bottom + 12;
+            }
+
+            _summaryLabel.Location = new Point(right, y);
+            y = _summaryLabel.Bottom;
+
+            if (automatic)
+            {
+                _batteryCheck.Location = new Point(right + 2, y + 14);
+                _batteryNote.Location = new Point(right + 20, _batteryCheck.Bottom + 4);
+                y = _batteryNote.Bottom;
+            }
+            int rightBottom = y;
 
             // --- buttons, under whichever column ran longer -------------------
-            int buttonRow = Math.Max(leftBottom, rightBottom) + 24;
+            // A button that can do nothing in this state is hidden, not greyed
+            // out with a label explaining why.
+            int buttonRow = Math.Max(leftBottom, rightBottom) + 28;
+            _applyButton.Visible = automatic;
+            _restoreButton.Visible = _hasBackup;
 
-            _applyButton.Location = new Point(EdgeMargin, buttonRow);
-            _restoreButton.Location = new Point(_applyButton.Right + 8, buttonRow);
-            _diagnosticsButton.Location = new Point(_restoreButton.Right + 8, buttonRow);
+            var shown = new List<Button>();
+            if (automatic) shown.Add(_applyButton);
+            if (_hasBackup) shown.Add(_restoreButton);
+            shown.Add(_diagnosticsButton);
+
+            int x = EdgeMargin;
+            foreach (Button button in shown)
+            {
+                button.Location = new Point(x, buttonRow);
+                x = button.Right + 8;
+            }
 
             // Right-aligned, but never on top of Diagnostics. The old code
             // trusted ClientSize.Width, which shrinks when a scrollbar appears -
@@ -434,6 +468,17 @@ namespace AFKLocker.Setup
 
         private void Refresh(bool showErrors)
         {
+            // Outside the power read below: a plan that cannot be read must not
+            // also hide the way back to saved values.
+            try
+            {
+                _hasBackup = _backups.ListSchemes().Any();
+            }
+            catch (Exception)
+            {
+                _hasBackup = false;
+            }
+
             try
             {
                 PowerSnapshot snapshot = PowerSnapshot.Read(_power, _info);
@@ -443,13 +488,25 @@ namespace AFKLocker.Setup
                 int contentHeight = RenderChecks(_report);
 
                 AutoLockStatus status = _autoLock.GetStatus();
-                bool manual = status.Mode == LockMode.Manual;
-                _summaryLabel.Text = manual
-                    ? "Manual AFK is session-only; normal power and display timeouts stay unchanged."
-                    : _report.Summary;
-                _summaryLabel.ForeColor = manual || _report.IsReady
-                    ? Color.FromArgb(16, 124, 16)
-                    : Color.FromArgb(196, 43, 28);
+                _automaticLayout = status.Mode == LockMode.Automatic;
+
+                if (_automaticLayout)
+                {
+                    _summaryLabel.Text = _report.Summary;
+                    _summaryLabel.Font = _summaryFont;
+                    _summaryLabel.ForeColor = _report.IsReady
+                        ? Color.FromArgb(16, 124, 16)
+                        : Color.FromArgb(196, 43, 28);
+                }
+                else
+                {
+                    _summaryLabel.Text = "Nothing to configure in Manual mode. While AFK is active the PC "
+                                         + "stays awake and closing the lid does nothing; both go back to your "
+                                         + "normal settings when you return. Display and sleep timeouts are "
+                                         + "never changed.";
+                    _summaryLabel.Font = Font;
+                    _summaryLabel.ForeColor = Color.FromArgb(94, 94, 94);
+                }
 
                 RefreshLockBehaviour();
                 RefreshKeyboardLighting();
@@ -461,6 +518,7 @@ namespace AFKLocker.Setup
                 _report = null;
                 _planLabel.Text = "Power plan: unavailable";
                 _summaryLabel.Text = "Could not read power settings";
+                _summaryLabel.Font = _summaryFont;
                 _summaryLabel.ForeColor = Color.FromArgb(196, 43, 28);
                 _applyButton.Enabled = false;
                 RefreshLockBehaviour();
@@ -615,9 +673,9 @@ namespace AFKLocker.Setup
 
             if (!status.HelperRequired)
             {
+                // Nothing needs a helper and none is registered: nothing worth a line.
                 if (status.IsConsistent)
-                    return "Helper: not running. Nothing of AFKLocker is resident with manual "
-                           + "locking and the hotkey off.";
+                    return string.Empty;
 
                 // Returning the happy sentence unconditionally hid the one thing
                 // worth saying here: that something is still set to start at
@@ -866,7 +924,6 @@ namespace AFKLocker.Setup
             if (!automatic)
             {
                 _applyButton.Enabled = false;
-                _applyButton.Text = "Session-only in Manual";
                 return;
             }
 
@@ -1113,17 +1170,16 @@ namespace AFKLocker.Setup
                 }
                 else
                 {
-                    text = "Supported. On: the lighting turns off during AFK.";
+                    text = "On. Supported on this PC.";
                 }
             }
             else if (supported)
             {
-                text = "Supported on this PC. Switching it on asks Windows for administrator approval once, "
-                       + "because this PC's lighting controller only accepts requests from administrators.";
+                text = "Supported on this PC. Switching it on asks for administrator approval once.";
             }
             else if (_lightingDetection.Support == KeyboardLightingSupport.Unsupported)
             {
-                text = "Unsupported: AFKLocker found no keyboard lighting it can control on this PC.";
+                text = "Not supported on this PC.";
             }
             else
             {
