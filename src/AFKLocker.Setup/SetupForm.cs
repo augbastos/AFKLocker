@@ -827,8 +827,9 @@ namespace AFKLocker.Setup
                     "Turn on automatic locking?\r\n\r\n"
                     + "AFKLocker will start a small background watcher when you sign in. When the "
                     + "laptop lid closes, it locks Windows. Opening the lid never unlocks anything.\r\n\r\n"
-                    + "The watcher does not change power settings and does not keep the machine "
-                    + "awake by itself - that is what the settings above do.\r\n\r\n"
+                    + "Staying awake after the lid closes depends on the power settings shown in this "
+                    + "window, which Windows needs in place before the lid closes. Setup asks before "
+                    + "changing them.\r\n\r\n"
                     + "Never leave a running, lid-closed laptop in a bag, sleeve or drawer.",
                     "AFKLocker Setup", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
             {
