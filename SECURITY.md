@@ -89,7 +89,15 @@ verify from scratch:
   else: the mode and hotkey controls are switched off in it, and it will not
   start the background helper, because a child process inherits its parent's
   token.
-- **No service and no scheduled task.** The optional background helper is a
-  normal user-session process, started from `HKCU\...\Run`, visible in Task
-  Manager's Startup tab, and never running with more rights than the session it
-  looks after.
+- **No service.** The optional background helper is a normal user-session
+  process, started from `HKCU\...\Run`, visible in Task Manager's Startup tab,
+  and never running with more rights than the session it looks after.
+- **Scheduled tasks only for keyboard lighting, and only if you switch it on.**
+  That option needs administrator rights, so it installs two trigger-less tasks
+  that run a protected copy of AFKLocker from `Program Files` with one fixed
+  argument each: turn the lighting off, or restore it. They never point at the
+  per-user install folder, which any program running as you could modify.
+  Switching the option off removes them. The one-time approval prompt still
+  elevates the executable from the install folder; installing for all users
+  (into `Program Files`) closes that gap. Details in
+  [docs/architecture.md](docs/architecture.md).
