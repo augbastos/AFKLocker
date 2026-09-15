@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## [0.6.0] - 2026-09-15
 
 ### Fixed
 
@@ -37,6 +37,8 @@ This project follows [Semantic Versioning](https://semver.org/).
   checks and the Apply button appear only in Automatic mode, which is the only mode that needs
   them, and Restore previous appears only when there is something to restore. The power summary no
   longer runs across into the other column and covers the hotkey controls.
+- The README is about a third of its previous length; the detail lives in
+  [docs/architecture.md](docs/architecture.md).
 
 ## [0.5.3] - 2026-09-07
 
@@ -472,6 +474,8 @@ Initial release.
   machines.
 - Binaries are not code-signed, so SmartScreen will warn on first run.
 
+[0.6.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.6.0
+[0.5.3]: https://github.com/augbastos/AFKLocker/releases/tag/v0.5.3
 [0.5.2]: https://github.com/augbastos/AFKLocker/releases/tag/v0.5.2
 [0.5.1]: https://github.com/augbastos/AFKLocker/releases/tag/v0.5.1
 [0.5.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.5.0
