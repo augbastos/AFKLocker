@@ -121,6 +121,29 @@ namespace AFKLocker.Core
             }
         }
 
+        /// <summary>True while original lid values are saved and not yet put back.</summary>
+        public bool HasPendingRestore
+        {
+            get { return File.Exists(_snapshotPath); }
+        }
+
+        /// <summary>
+        /// Puts back lid values left by a session that never finished. Does
+        /// nothing while another AFK session still owns them.
+        /// </summary>
+        public void Recover()
+        {
+            AcquireSessionLock();
+            try
+            {
+                if (_ownsPowerValues) RestoreStaleSnapshot();
+            }
+            finally
+            {
+                ReleaseSessionLock();
+            }
+        }
+
         private void AcquireSessionLock()
         {
             string directory = Path.GetDirectoryName(_snapshotPath);

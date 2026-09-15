@@ -1,270 +1,227 @@
 using System;
-using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using System.Linq;
-using System.Management;
 using System.Text;
 
 namespace AFKLocker.Core
 {
+    public enum KeyboardLightingSupport
+    {
+        Unsupported,
+        Supported,
+        DetectionFailed
+    }
+
+    public sealed class KeyboardLightingDetection
+    {
+        internal KeyboardLightingDetection(KeyboardLightingSupport support,
+            IKeyboardLightingBackend backend, string detail)
+        {
+            Support = support;
+            Backend = backend;
+            Detail = detail;
+        }
+
+        public KeyboardLightingSupport Support { get; private set; }
+
+        /// <summary>The backend that will be used. Null unless supported.</summary>
+        public IKeyboardLightingBackend Backend { get; private set; }
+
+        /// <summary>Why detection failed. Diagnostic text, never a headline.</summary>
+        public string Detail { get; private set; }
+    }
+
+    /// <summary>
+    /// One way of controlling keyboard lighting on some hardware.
+    ///
+    /// Every vendor detail stays behind this interface. The controller, the AFK
+    /// session and Setup only ever deal in "supported", "off" and "restore", so
+    /// adding hardware never touches the UI or the session.
+    /// </summary>
+    public interface IKeyboardLightingBackend
+    {
+        /// <summary>Stable id written into the recovery snapshot. Never shown to users.</summary>
+        string Id { get; }
+
+        /// <summary>
+        /// Whether this machine exposes the interface. Fast, changes nothing, and
+        /// works without administrator rights. Throws when it cannot tell.
+        /// </summary>
+        bool IsPresent();
+
+        /// <summary>The current lighting state as a single line of text.</summary>
+        string Capture();
+
+        /// <summary>Darkens the keyboard, starting from what Capture returned.</summary>
+        void TurnOff(string captured);
+
+        /// <summary>Puts back exactly what Capture returned, and checks that it took.</summary>
+        void Restore(string captured);
+    }
+
+    /// <summary>
+    /// Picks the backend that can control this machine's keyboard lighting and
+    /// runs capture, persist, off and restore through it.
+    ///
+    /// The captured state reaches disk before anything changes, because while
+    /// the keyboard is dark that file is the only copy of the user's real
+    /// lighting. For the same reason TurnOff never overwrites it: a snapshot
+    /// left behind by a session that was killed is restored first.
+    /// </summary>
+    public sealed class KeyboardLightingController
+    {
+        private const int SnapshotVersion = 1;
+
+        private readonly IKeyboardLightingBackend[] _backends;
+        private readonly string _snapshotPath;
+
+        public KeyboardLightingController(string snapshotPath)
+            : this(snapshotPath, KnownBackends())
+        {
+        }
+
+        public KeyboardLightingController(string snapshotPath, params IKeyboardLightingBackend[] backends)
+        {
+            if (string.IsNullOrEmpty(snapshotPath))
+                throw new ArgumentException("snapshot path must not be empty", "snapshotPath");
+            if (backends == null) throw new ArgumentNullException("backends");
+            _snapshotPath = snapshotPath;
+            _backends = backends;
+        }
+
+        /// <summary>
+        /// Every backend AFKLocker ships, most specific first. Supporting more
+        /// hardware means adding an entry here and nothing anywhere else.
+        /// </summary>
+        public static IKeyboardLightingBackend[] KnownBackends()
+        {
+            return new IKeyboardLightingBackend[] { new AcerGamingKeyboardBackend() };
+        }
+
+        public bool HasPendingRestore
+        {
+            get { return File.Exists(_snapshotPath); }
+        }
+
+        public KeyboardLightingDetection Detect()
+        {
+            string failure = null;
+            foreach (IKeyboardLightingBackend backend in _backends)
+            {
+                try
+                {
+                    if (backend.IsPresent())
+                        return new KeyboardLightingDetection(KeyboardLightingSupport.Supported, backend, null);
+                }
+                catch (Exception ex)
+                {
+                    // Keep looking: a later backend may still match. A failure
+                    // only decides the answer when nothing else does.
+                    if (failure == null) failure = ex.Message;
+                }
+            }
+
+            return failure == null
+                ? new KeyboardLightingDetection(KeyboardLightingSupport.Unsupported, null, null)
+                : new KeyboardLightingDetection(KeyboardLightingSupport.DetectionFailed, null, failure);
+        }
+
+        public void TurnOff()
+        {
+            Restore();
+
+            KeyboardLightingDetection detection = Detect();
+            if (detection.Support == KeyboardLightingSupport.Unsupported)
+                throw new InvalidOperationException("This PC's keyboard lighting is not supported.");
+            if (detection.Support == KeyboardLightingSupport.DetectionFailed)
+                throw new InvalidOperationException("Keyboard lighting could not be detected: " + detection.Detail);
+
+            IKeyboardLightingBackend backend = detection.Backend;
+            string captured = backend.Capture();
+            AtomicFile.WriteAllText(_snapshotPath, Serialize(backend.Id, captured));
+
+            // If this throws the snapshot stays, so Restore still puts back
+            // whatever a partial change did.
+            backend.TurnOff(captured);
+        }
+
+        public void Restore()
+        {
+            if (!File.Exists(_snapshotPath)) return;
+
+            string id;
+            string captured;
+            Parse(File.ReadAllText(_snapshotPath, Encoding.UTF8), out id, out captured);
+
+            IKeyboardLightingBackend backend = null;
+            foreach (IKeyboardLightingBackend candidate in _backends)
+                if (string.Equals(candidate.Id, id, StringComparison.Ordinal)) backend = candidate;
+            if (backend == null)
+                throw new InvalidOperationException("The saved keyboard lighting state belongs to a controller "
+                                                    + "this version of AFKLocker does not know.");
+
+            backend.Restore(captured);
+            File.Delete(_snapshotPath);
+        }
+
+        internal static string Serialize(string backendId, string captured)
+        {
+            if (captured == null || captured.IndexOfAny(new[] { '\r', '\n' }) >= 0)
+                throw new InvalidOperationException("A keyboard lighting backend returned a state that is not one line.");
+
+            var text = new StringBuilder();
+            text.AppendLine("# AFKLocker keyboard lighting, captured before an AFK session");
+            text.AppendLine("version=" + SnapshotVersion.ToString(CultureInfo.InvariantCulture));
+            text.AppendLine("backend=" + backendId);
+            text.AppendLine("state=" + captured);
+            return text.ToString();
+        }
+
+        internal static void Parse(string text, out string backendId, out string captured)
+        {
+            string version = null;
+            backendId = null;
+            captured = null;
+
+            foreach (string rawLine in text.Split('\n'))
+            {
+                string line = rawLine.TrimEnd('\r');
+                if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal)) continue;
+
+                int separator = line.IndexOf('=');
+                if (separator <= 0) throw new FormatException("Malformed keyboard lighting snapshot.");
+                string key = line.Substring(0, separator);
+                string value = line.Substring(separator + 1);
+
+                if (key == "version") version = value;
+                else if (key == "backend") backendId = value;
+                else if (key == "state") captured = value;
+            }
+
+            if (version != SnapshotVersion.ToString(CultureInfo.InvariantCulture))
+                throw new FormatException("Keyboard lighting snapshot version is not supported.");
+            if (string.IsNullOrEmpty(backendId) || captured == null)
+                throw new FormatException("Keyboard lighting snapshot is incomplete.");
+        }
+    }
+
+    /// <summary>The keyboard lighting part of one AFK session.</summary>
     public interface IKeyboardLightingSession : IDisposable
     {
         void Enter();
+
+        /// <summary>True while captured lighting is saved and not yet put back.</summary>
+        bool HasPendingRestore { get; }
     }
 
     public sealed class NoKeyboardLightingSession : IKeyboardLightingSession
     {
         public void Enter() { }
         public void Dispose() { }
-    }
 
-    /// <summary>
-    /// Acer Nitro/Predator keyboard lighting through the same AcerGamingFunction
-    /// WMI surface NitroSense uses. The full backlight payload and every zone
-    /// colour are captured before brightness is set to zero, then restored on
-    /// exit. AFKLocker never invents or persists a replacement colour profile.
-    /// </summary>
-    public sealed class AcerKeyboardLightingSession : IKeyboardLightingSession
-    {
-        private static readonly uint[] Zones = { 1, 2, 4, 8 };
-        private readonly string _snapshotPath;
-        private bool _entered;
-        private bool _disposed;
-
-        public AcerKeyboardLightingSession()
-            : this(Path.Combine(FileBackupStore.DefaultDirectory, "keyboard-lighting-session.txt"))
+        public bool HasPendingRestore
         {
-        }
-
-        public AcerKeyboardLightingSession(string snapshotPath)
-        {
-            if (string.IsNullOrEmpty(snapshotPath))
-                throw new ArgumentException("snapshot path must not be empty", "snapshotPath");
-            _snapshotPath = snapshotPath;
-        }
-
-        public void Enter()
-        {
-            if (_entered) return;
-
-            // A previous process may have been killed while AFK mode was
-            // active. Never overwrite the only copy of the real user profile
-            // with a snapshot of the already-dark keyboard.
-            if (File.Exists(_snapshotPath)) RestoreSnapshot();
-
-            using (ManagementObject gaming = OpenGamingInterface())
-            {
-                KeyboardLightingSnapshot snapshot = Capture(gaming);
-                AtomicFile.WriteAllText(_snapshotPath, snapshot.Serialize());
-
-                byte[] off = snapshot.CreateSetterPayload();
-                if (off.Length < 3)
-                    throw new InvalidOperationException("Acer returned an incomplete keyboard payload.");
-
-                // Brightness is a separate byte in Acer's documented 16-byte
-                // firmware payload. Keeping every other byte intact means the
-                // user's mode, speed, direction and colours are not replaced.
-                off[2] = 0;
-                InvokeSet(gaming, "SetGamingKBBacklight", off);
-            }
-
-            _entered = true;
-        }
-
-        public void Dispose()
-        {
-            if (_disposed) return;
-            _disposed = true;
-            if (!_entered && !File.Exists(_snapshotPath)) return;
-
-            RestoreSnapshot();
-            _entered = false;
-        }
-
-        private void RestoreSnapshot()
-        {
-
-            KeyboardLightingSnapshot snapshot =
-                KeyboardLightingSnapshot.Deserialize(File.ReadAllText(_snapshotPath, Encoding.UTF8));
-
-            using (ManagementObject gaming = OpenGamingInterface())
-            {
-                for (int index = 0; index < Zones.Length; index++)
-                    InvokeSet(gaming, "SetGamingRgbKb", snapshot.ZoneValues[index] | Zones[index]);
-
-                InvokeSet(gaming, "SetGamingKBBacklight", snapshot.CreateSetterPayload());
-            }
-
-            File.Delete(_snapshotPath);
-        }
-
-        private static KeyboardLightingSnapshot Capture(ManagementObject gaming)
-        {
-            ManagementBaseObject response = Invoke(gaming, "GetGamingKBBacklight", (uint)1);
-            EnsureReturnSuccess(response, "GetGamingKBBacklight");
-
-            byte[] backlight = response["gmOutput"] as byte[];
-            if (backlight == null || backlight.Length < 3)
-                throw new InvalidOperationException("GetGamingKBBacklight returned no usable payload.");
-
-            var colours = new List<ulong>();
-            foreach (uint zone in Zones)
-            {
-                using (ManagementBaseObject colour = Invoke(gaming, "GetGamingRgbKb", zone))
-                {
-                    EnsureReturnSuccess(colour, "GetGamingRgbKb");
-                    object raw = colour["gmOutput"];
-                    if (raw == null)
-                        throw new InvalidOperationException("GetGamingRgbKb returned no value.");
-                    colours.Add(Convert.ToUInt64(raw, CultureInfo.InvariantCulture));
-                }
-            }
-
-            return new KeyboardLightingSnapshot(backlight, colours.ToArray());
-        }
-
-        private static ManagementObject OpenGamingInterface()
-        {
-            var scope = new ManagementScope(@"\\.\root\WMI");
-            scope.Connect();
-
-            using (var searcher = new ManagementObjectSearcher(scope,
-                new ObjectQuery("SELECT * FROM AcerGamingFunction")))
-            using (ManagementObjectCollection matches = searcher.Get())
-            {
-                foreach (ManagementObject match in matches)
-                    return match;
-            }
-
-            throw new InvalidOperationException(
-                "AcerGamingFunction was not found. NitroSense and the Acer system interface must be installed.");
-        }
-
-        private static ManagementBaseObject Invoke(ManagementObject gaming, string method, object inputValue)
-        {
-            ManagementBaseObject input = gaming.GetMethodParameters(method);
-            if (input == null)
-                throw new InvalidOperationException("This Acer firmware does not expose " + method + ".");
-            input["gmInput"] = inputValue;
-
-            ManagementBaseObject output = gaming.InvokeMethod(method, input, null);
-            if (output == null)
-                throw new InvalidOperationException(method + " returned no response.");
-            return output;
-        }
-
-        private static void InvokeSet(ManagementObject gaming, string method, object inputValue)
-        {
-            using (ManagementBaseObject output = Invoke(gaming, method, inputValue))
-            {
-                object raw = output["gmOutput"];
-                if (raw == null)
-                    throw new InvalidOperationException(method + " returned no status.");
-
-                uint status = Convert.ToUInt32(raw, CultureInfo.InvariantCulture);
-                if ((status & 0xFF) != 0)
-                    throw new InvalidOperationException(string.Format(CultureInfo.InvariantCulture,
-                        "{0} rejected the request with status 0x{1:X}.", method, status));
-            }
-        }
-
-        private static void EnsureReturnSuccess(ManagementBaseObject output, string method)
-        {
-            object raw = output["gmReturn"];
-            if (raw == null) return;
-            byte status = Convert.ToByte(raw, CultureInfo.InvariantCulture);
-            if (status != 0)
-                throw new InvalidOperationException(string.Format(CultureInfo.InvariantCulture,
-                    "{0} returned status 0x{1:X2}.", method, status));
-        }
-    }
-
-    public sealed class KeyboardLightingSnapshot
-    {
-        public const int CurrentVersion = 1;
-
-        public byte[] Backlight { get; private set; }
-        public ulong[] ZoneValues { get; private set; }
-
-        public KeyboardLightingSnapshot(byte[] backlight, ulong[] zoneValues)
-        {
-            if (backlight == null || backlight.Length < 3)
-                throw new ArgumentException("backlight payload is incomplete", "backlight");
-            if (zoneValues == null || zoneValues.Length != 4)
-                throw new ArgumentException("exactly four zone values are required", "zoneValues");
-
-            Backlight = (byte[])backlight.Clone();
-            ZoneValues = (ulong[])zoneValues.Clone();
-        }
-
-        /// <summary>Acer's setter takes 16 bytes; the getter returns 15 plus a status byte.</summary>
-        public byte[] CreateSetterPayload()
-        {
-            var payload = new byte[16];
-            Array.Copy(Backlight, payload, Math.Min(Backlight.Length, payload.Length));
-            return payload;
-        }
-
-        public string Serialize()
-        {
-            var text = new StringBuilder();
-            text.AppendLine("# AFKLocker temporary Acer keyboard state");
-            text.AppendLine("version=" + CurrentVersion.ToString(CultureInfo.InvariantCulture));
-            text.AppendLine("backlight=" + Convert.ToBase64String(Backlight));
-            for (int index = 0; index < ZoneValues.Length; index++)
-                text.AppendLine("zone" + index.ToString(CultureInfo.InvariantCulture) + "=" +
-                    ZoneValues[index].ToString(CultureInfo.InvariantCulture));
-            return text.ToString();
-        }
-
-        public static KeyboardLightingSnapshot Deserialize(string text)
-        {
-            if (text == null) throw new ArgumentNullException("text");
-
-            int version = 0;
-            byte[] backlight = null;
-            var zones = new ulong[4];
-            var sawZone = new bool[4];
-
-            foreach (string rawLine in text.Split('\n'))
-            {
-                string line = rawLine.Trim();
-                if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal)) continue;
-                int separator = line.IndexOf('=');
-                if (separator <= 0) throw new FormatException("Malformed keyboard snapshot line.");
-
-                string key = line.Substring(0, separator).Trim();
-                string value = line.Substring(separator + 1).Trim();
-                if (key == "version")
-                {
-                    if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out version))
-                        throw new FormatException("Keyboard snapshot version is invalid.");
-                }
-                else if (key == "backlight")
-                {
-                    backlight = Convert.FromBase64String(value);
-                }
-                else if (key.StartsWith("zone", StringComparison.Ordinal) && key.Length == 5)
-                {
-                    int index = key[4] - '0';
-                    ulong parsed;
-                    if (index < 0 || index >= zones.Length ||
-                        !ulong.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed))
-                        throw new FormatException("Keyboard snapshot zone is invalid.");
-                    zones[index] = parsed;
-                    sawZone[index] = true;
-                }
-            }
-
-            if (version != CurrentVersion)
-                throw new FormatException("Keyboard snapshot version is not supported.");
-            if (backlight == null || backlight.Length < 3)
-                throw new FormatException("Keyboard snapshot has no backlight payload.");
-            if (sawZone.Any(value => !value))
-                throw new FormatException("Keyboard snapshot does not contain all four zones.");
-
-            return new KeyboardLightingSnapshot(backlight, zones);
+            get { return false; }
         }
     }
 }

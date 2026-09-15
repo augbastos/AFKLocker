@@ -29,9 +29,9 @@ namespace AFKLocker.Core
         /// <exception cref="Exception">The AFK session could not be armed safely.</exception>
         public static AfkSession EnterAfkMode(ISessionLocker locker,
             IDisplayController displays, IUserInputMonitor input,
-            TemporaryPowerMode power, IKeyboardLightingSession lighting)
+            TemporaryPowerMode power, IKeyboardLightingSession lighting, AfkRecovery recovery)
         {
-            return AfkSession.Start(locker, displays, input, power, lighting, true);
+            return AfkSession.Start(locker, displays, input, power, lighting, recovery, true);
         }
     }
 }

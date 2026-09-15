@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -28,7 +29,7 @@ namespace AFKLocker.Watcher
     ///
     /// Each lock activation owns the same bounded AFK session as the desktop
     /// shortcut: temporary lid values, a process-scoped keep-awake request,
-    /// display relight suppression and optional Acer keyboard darkness. Those
+    /// display relight suppression and optional keyboard lighting darkness. Those
     /// are restored when input or unlock ends the session. Automatic mode still
     /// needs its explicitly persistent pre-close configuration.
     ///
@@ -330,6 +331,8 @@ namespace AFKLocker.Watcher
                         _input,
                         new TemporaryPowerMode(power, new WindowsExecutionStateController()),
                         KeyboardLightingSessionFactory.Create(),
+                        AfkRecovery.ForExecutable(Path.Combine(
+                            AppDomain.CurrentDomain.BaseDirectory, "AFKLocker.exe")),
                         lockSession);
                 }
                 catch (Exception)

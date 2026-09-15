@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Security.Principal;
 using System.Text;
 using System.Windows.Forms;
 using AFKLocker.Core;
@@ -74,6 +76,14 @@ namespace AFKLocker.Setup
         private readonly Label _hotkeyNote = new Label();
         private readonly Label _hotkeyStatus = new Label();
 
+        private readonly Label _lightingHeader = new Label();
+        private readonly CheckBox _lightingCheck = new CheckBox();
+        private readonly Label _lightingNote = new Label();
+        private readonly Label _lightingStatus = new Label();
+
+        /// <summary>Detected once per window: the hardware does not change while it is open.</summary>
+        private KeyboardLightingDetection _lightingDetection;
+
         /// <summary>What the form last read from disk, so a change can be told from a redraw.</summary>
         private AutoLockSettings _savedSettings = new AutoLockSettings();
 
@@ -83,7 +93,6 @@ namespace AFKLocker.Setup
         private readonly Button _applyButton = new Button();
         private readonly Button _restoreButton = new Button();
         private readonly Button _diagnosticsButton = new Button();
-        private readonly Button _keyboardButton = new Button();
         private readonly Button _closeButton = new Button();
 
         private ReadinessReport _report;
@@ -253,6 +262,20 @@ namespace AFKLocker.Setup
             _hotkeyStatus.MaximumSize = new Size(width - 20, 0);
             _hotkeyStatus.ForeColor = Color.FromArgb(94, 94, 94);
 
+            StyleSectionHeader(_lightingHeader, "KEYBOARD LIGHTING");
+
+            _lightingCheck.Text = "Turn off keyboard lighting during AFK";
+            _lightingCheck.AutoSize = true;
+            _lightingCheck.CheckedChanged += OnLightingChanged;
+
+            StyleNote(_lightingNote, width - 20,
+                "Off by default. The lighting goes dark when AFK starts and comes back exactly as it was "
+                + "when you return. AFKLocker detects on its own whether it can control this PC's lighting.");
+
+            _lightingStatus.AutoSize = true;
+            _lightingStatus.MaximumSize = new Size(width - 20, 0);
+            _lightingStatus.ForeColor = Color.FromArgb(94, 94, 94);
+
             _applyButton.Text = "Apply configuration";
             _applyButton.Size = new Size(160, 32);
             _applyButton.Anchor = AnchorStyles.Top | AnchorStyles.Left;
@@ -267,13 +290,6 @@ namespace AFKLocker.Setup
             _diagnosticsButton.Size = new Size(100, 32);
             _diagnosticsButton.Anchor = AnchorStyles.Top | AnchorStyles.Left;
             _diagnosticsButton.Click += OnDiagnosticsClicked;
-
-            _keyboardButton.Text = ScheduledAcerKeyboardLightingSession.IsInstalled
-                ? "Acer keyboard ready"
-                : "Configure Acer keyboard";
-            _keyboardButton.Size = new Size(170, 32);
-            _keyboardButton.Anchor = AnchorStyles.Top | AnchorStyles.Left;
-            _keyboardButton.Click += OnKeyboardIntegrationClicked;
 
             _closeButton.Text = "Close";
             _closeButton.Size = new Size(100, 32);
@@ -290,7 +306,8 @@ namespace AFKLocker.Setup
                 _batteryCheck, _batteryNote,
                 _lockHeader, _manualRadio, _manualNote, _automaticRadio, _automaticNote, _watcherStatus,
                 _hotkeyHeader, _hotkeyCheck, _hotkeyBox, _hotkeyClear, _hotkeyNote, _hotkeyStatus,
-                _applyButton, _restoreButton, _diagnosticsButton, _keyboardButton, _closeButton
+                _lightingHeader, _lightingCheck, _lightingNote, _lightingStatus,
+                _applyButton, _restoreButton, _diagnosticsButton, _closeButton
             });
         }
 
@@ -382,7 +399,19 @@ namespace AFKLocker.Setup
             y = _hotkeyNote.Bottom + 6;
 
             _hotkeyStatus.Location = new Point(right + 20, y);
-            int rightBottom = _hotkeyStatus.Bottom;
+            y = _hotkeyStatus.Bottom + 24;
+
+            _lightingHeader.Location = new Point(right, y);
+            y = _lightingHeader.Bottom + 10;
+
+            _lightingCheck.Location = new Point(right + 2, y);
+            y = _lightingCheck.Bottom + 2;
+
+            _lightingNote.Location = new Point(right + 20, y);
+            y = _lightingNote.Bottom + 6;
+
+            _lightingStatus.Location = new Point(right + 20, y);
+            int rightBottom = _lightingStatus.Bottom;
 
             // --- buttons, under whichever column ran longer -------------------
             int buttonRow = Math.Max(leftBottom, rightBottom) + 24;
@@ -390,13 +419,12 @@ namespace AFKLocker.Setup
             _applyButton.Location = new Point(EdgeMargin, buttonRow);
             _restoreButton.Location = new Point(_applyButton.Right + 8, buttonRow);
             _diagnosticsButton.Location = new Point(_restoreButton.Right + 8, buttonRow);
-            _keyboardButton.Location = new Point(_diagnosticsButton.Right + 8, buttonRow);
 
             // Right-aligned, but never on top of Diagnostics. The old code
             // trusted ClientSize.Width, which shrinks when a scrollbar appears -
             // and that is exactly when the two collided.
             int closeX = ClientSize.Width - EdgeMargin - _closeButton.Width;
-            int earliestCloseX = _keyboardButton.Right + 16;
+            int earliestCloseX = _diagnosticsButton.Right + 16;
             _closeButton.Location = new Point(Math.Max(closeX, earliestCloseX), buttonRow);
 
             int desired = buttonRow + _applyButton.Height + 20;
@@ -424,6 +452,7 @@ namespace AFKLocker.Setup
                     : Color.FromArgb(196, 43, 28);
 
                 RefreshLockBehaviour();
+                RefreshKeyboardLighting();
                 PerformVerticalLayout(contentHeight);
                 UpdateButtons();
             }
@@ -435,6 +464,7 @@ namespace AFKLocker.Setup
                 _summaryLabel.ForeColor = Color.FromArgb(196, 43, 28);
                 _applyButton.Enabled = false;
                 RefreshLockBehaviour();
+                RefreshKeyboardLighting();
                 PerformVerticalLayout(60);
                 if (showErrors)
                     ShowMessage("AFKLocker could not read this machine's power configuration.\r\n\r\n"
@@ -1042,51 +1072,164 @@ namespace AFKLocker.Setup
             RefreshLockBehaviour();
         }
 
-        private void OnKeyboardIntegrationClicked(object sender, EventArgs e)
-        {
-            string appPath = Path.Combine(Application.StartupPath, "AFKLocker.exe");
-            if (!File.Exists(appPath))
-            {
-                ShowMessage("AFKLocker.exe was not found next to Setup.", MessageBoxIcon.Warning);
-                return;
-            }
+        // ---------------------------------------------------- keyboard lighting ---
 
-            try
+        private void RefreshKeyboardLighting()
+        {
+            if (_lightingDetection == null)
+                _lightingDetection = new KeyboardLightingController(
+                    KeyboardLightingHelper.SnapshotPath(KeyboardLightingHelper.Directory)).Detect();
+
+            bool installed = KeyboardLightingHelper.IsInstalled;
+            bool supported = _lightingDetection.Support == KeyboardLightingSupport.Supported;
+
+            _loading = true;
+            _lightingCheck.Checked = installed;
+            _loading = false;
+
+            // Switching off stays possible even when the hardware is no longer
+            // detected - otherwise the helper could never be removed from here.
+            _lightingCheck.Enabled = !_elevated && (installed || supported);
+
+            bool broken = false;
+            string text;
+            if (_elevated)
             {
-                int exitCode;
-                if (KeyboardLightingTaskInstaller.IsAdministrator)
+                text = "Unavailable while running as administrator. Open AFKLocker Setup normally to change "
+                       + "this. Whatever is set now keeps working.";
+            }
+            else if (installed)
+            {
+                if (!KeyboardLightingHelper.TasksRegistered(new SchtasksScheduledTasks()))
                 {
-                    KeyboardLightingTaskInstaller.Install(appPath);
-                    exitCode = 0;
+                    text = "On, but incomplete: Windows no longer has its tasks. Switch it off and on again "
+                           + "to repair it.";
+                    broken = true;
+                }
+                else if (!supported)
+                {
+                    text = "On, but this PC no longer reports keyboard lighting AFKLocker can control.";
+                    broken = true;
                 }
                 else
                 {
-                    using (Process process = Process.Start(new ProcessStartInfo
+                    text = "Supported. On: the lighting turns off during AFK.";
+                }
+            }
+            else if (supported)
+            {
+                text = "Supported on this PC. Switching it on asks Windows for administrator approval once, "
+                       + "because this PC's lighting controller only accepts requests from administrators.";
+            }
+            else if (_lightingDetection.Support == KeyboardLightingSupport.Unsupported)
+            {
+                text = "Unsupported: AFKLocker found no keyboard lighting it can control on this PC.";
+            }
+            else
+            {
+                text = "Detection failed: " + _lightingDetection.Detail;
+            }
+
+            _lightingStatus.Text = text;
+            _lightingStatus.ForeColor = broken
+                ? Color.FromArgb(196, 43, 28)
+                : Color.FromArgb(94, 94, 94);
+        }
+
+        private void OnLightingChanged(object sender, EventArgs e)
+        {
+            if (_loading) return;
+            bool enable = _lightingCheck.Checked;
+
+            if (enable && MessageBox.Show(this,
+                    "Turn off keyboard lighting during AFK?\r\n\r\n"
+                    + "This PC's keyboard lighting controller only accepts requests from administrators, so "
+                    + "Windows asks for approval once. AFKLocker then installs a small helper in Program Files "
+                    + "and two on-demand tasks that can only turn the lighting off and restore it. Nothing "
+                    + "runs in the background.\r\n\r\n"
+                    + "To prove it works, the keyboard lighting switches off for a moment and comes back.",
+                    "AFKLocker Setup", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+            {
+                RefreshKeyboardLighting();
+                return;
+            }
+
+            if (!enable)
+            {
+                RunLightingHelper("--disable-keyboard-lighting");
+                Refresh(showErrors: false);
+                return;
+            }
+
+            string sid;
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                // The account that asked, passed explicitly: the one approving the
+                // prompt may be a different administrator.
+                sid = identity.User.Value;
+            }
+
+            if (RunLightingHelper("--enable-keyboard-lighting " + sid) == 0)
+            {
+                // From this unelevated process on purpose: a standard user starting
+                // the elevated tasks is what every AFK session does, so that is
+                // what has to be proven. The lighting goes off and comes back once.
+                Cursor = Cursors.WaitCursor;
+                try
+                {
+                    using (var test = new ElevatedKeyboardLightingSession())
                     {
-                        FileName = appPath,
-                        Arguments = "--install-keyboard-integration",
-                        UseShellExecute = true,
-                        Verb = "runas"
-                    }))
-                    {
-                        process.WaitForExit();
-                        exitCode = process.ExitCode;
+                        test.Enter();
                     }
                 }
+                catch (Exception ex)
+                {
+                    Cursor = Cursors.Default;
+                    ShowMessage("Keyboard lighting was set up, but its test failed, so it is being removed "
+                                + "again. Windows asks for approval once more.\r\n\r\n" + ex.Message,
+                        MessageBoxIcon.Warning);
+                    RunLightingHelper("--disable-keyboard-lighting");
+                }
+                finally
+                {
+                    Cursor = Cursors.Default;
+                }
+            }
 
-                if (exitCode != 0 || !ScheduledAcerKeyboardLightingSession.IsInstalled)
-                    throw new InvalidOperationException("Windows did not confirm both scheduled tasks.");
+            Refresh(showErrors: false);
+        }
 
-                _keyboardButton.Text = "Acer keyboard ready";
-                ShowMessage("Keyboard lighting is configured. AFK mode will temporarily turn it off "
-                            + "and restore the exact previous Acer profile when you return.",
-                    MessageBoxIcon.Information);
+        /// <summary>
+        /// Runs AFKLocker.exe elevated and returns its exit code, or -1 when it did
+        /// not run. The elevated process explains its own failures.
+        /// </summary>
+        private int RunLightingHelper(string arguments)
+        {
+            try
+            {
+                using (Process process = Process.Start(new ProcessStartInfo
+                {
+                    FileName = Path.Combine(Application.StartupPath, "AFKLocker.exe"),
+                    Arguments = arguments,
+                    UseShellExecute = true,
+                    Verb = "runas"
+                }))
+                {
+                    process.WaitForExit();
+                    return process.ExitCode;
+                }
+            }
+            catch (Win32Exception ex)
+            {
+                // 1223: the approval prompt was declined. Nothing changed.
+                if (ex.NativeErrorCode != 1223)
+                    ShowMessage("Keyboard lighting could not be changed.\r\n\r\n" + ex.Message, MessageBoxIcon.Warning);
             }
             catch (Exception ex)
             {
-                ShowMessage("Acer keyboard lighting could not be configured.\r\n\r\n" + ex.Message,
-                    MessageBoxIcon.Warning);
+                ShowMessage("Keyboard lighting could not be changed.\r\n\r\n" + ex.Message, MessageBoxIcon.Warning);
             }
+            return -1;
         }
 
         private DiagnosticReport RunSelfTest(SelfTestOptions options)

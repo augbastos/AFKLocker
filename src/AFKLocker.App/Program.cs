@@ -1,5 +1,5 @@
 using System;
-using System.Diagnostics;
+using System.Collections.Generic;
 using System.Windows.Forms;
 using AFKLocker.Core;
 
@@ -23,9 +23,9 @@ namespace AFKLocker.App
         [STAThread]
         private static int Main(string[] args)
         {
-            var mode = ParseArguments(args);
+            args = args ?? new string[0];
 
-            switch (mode)
+            switch (ParseArguments(args))
             {
                 case StartupMode.Help:
                     ShowUsage();
@@ -34,17 +34,20 @@ namespace AFKLocker.App
                 case StartupMode.DisplayOff:
                     return TurnDisplayOff();
 
-                case StartupMode.KeyboardOff:
-                    return KeyboardLightingTaskWorker.Run(false);
+                case StartupMode.KeyboardLightingOff:
+                    return KeyboardLightingHelper.RunWorker(false);
 
-                case StartupMode.KeyboardRestore:
-                    return KeyboardLightingTaskWorker.Run(true);
+                case StartupMode.KeyboardLightingRestore:
+                    return KeyboardLightingHelper.RunWorker(true);
 
-                case StartupMode.InstallKeyboardIntegration:
-                    return ConfigureKeyboardIntegration(false);
+                case StartupMode.EnableKeyboardLighting:
+                    return EnableKeyboardLighting(args.Length > 1 ? args[1] : null);
 
-                case StartupMode.UninstallKeyboardIntegration:
-                    return ConfigureKeyboardIntegration(true);
+                case StartupMode.DisableKeyboardLighting:
+                    return DisableKeyboardLighting();
+
+                case StartupMode.Recover:
+                    return Recover();
 
                 default:
                     return LockSession();
@@ -55,17 +58,16 @@ namespace AFKLocker.App
         {
             Lock,
             DisplayOff,
-            KeyboardOff,
-            KeyboardRestore,
-            InstallKeyboardIntegration,
-            UninstallKeyboardIntegration,
+            KeyboardLightingOff,
+            KeyboardLightingRestore,
+            EnableKeyboardLighting,
+            DisableKeyboardLighting,
+            Recover,
             Help
         }
 
         private static StartupMode ParseArguments(string[] args)
         {
-            if (args == null) return StartupMode.Lock;
-
             foreach (string arg in args)
             {
                 string flag = (arg ?? string.Empty).TrimStart('-', '/').ToLowerInvariant();
@@ -75,14 +77,16 @@ namespace AFKLocker.App
                     case "displayoff":
                     case "d":
                         return StartupMode.DisplayOff;
-                    case "keyboard-off":
-                        return StartupMode.KeyboardOff;
-                    case "keyboard-restore":
-                        return StartupMode.KeyboardRestore;
-                    case "install-keyboard-integration":
-                        return StartupMode.InstallKeyboardIntegration;
-                    case "uninstall-keyboard-integration":
-                        return StartupMode.UninstallKeyboardIntegration;
+                    case "keyboard-lighting-off":
+                        return StartupMode.KeyboardLightingOff;
+                    case "keyboard-lighting-restore":
+                        return StartupMode.KeyboardLightingRestore;
+                    case "enable-keyboard-lighting":
+                        return StartupMode.EnableKeyboardLighting;
+                    case "disable-keyboard-lighting":
+                        return StartupMode.DisableKeyboardLighting;
+                    case "recover":
+                        return StartupMode.Recover;
                     case "help":
                     case "h":
                     case "?":
@@ -106,7 +110,8 @@ namespace AFKLocker.App
                     new WindowsDisplayController(),
                     new WindowsUserInputMonitor(),
                     new TemporaryPowerMode(power, new WindowsExecutionStateController()),
-                    KeyboardLightingSessionFactory.Create());
+                    KeyboardLightingSessionFactory.Create(),
+                    AfkRecovery.ForExecutable(Application.ExecutablePath));
             }
             catch (Exception ex)
             {
@@ -121,7 +126,7 @@ namespace AFKLocker.App
                           + "Run AFKLocker again to retry recovery.\r\n\r\n" + session.RestoreError);
 
             if (!string.IsNullOrEmpty(session.LightingError))
-                ShowError("AFK mode worked, but the Acer keyboard lighting could not be controlled.\r\n\r\n"
+                ShowError("AFK mode worked, but keyboard lighting could not be controlled.\r\n\r\n"
                           + session.LightingError);
             return 0;
         }
@@ -183,6 +188,108 @@ namespace AFKLocker.App
             }
         }
 
+        /// <summary>
+        /// Run by Windows at sign-in when an AFK session never reached its own
+        /// cleanup. See <see cref="AfkRecovery"/>.
+        /// </summary>
+        private static int Recover()
+        {
+            var failures = new List<string>();
+
+            try
+            {
+                new TemporaryPowerMode(new WindowsPowerConfiguration(), new WindowsExecutionStateController())
+                    .Recover();
+            }
+            catch (Exception ex)
+            {
+                failures.Add(ex.Message);
+            }
+
+            try
+            {
+                if (KeyboardLightingHelper.IsInstalled)
+                    new ElevatedKeyboardLightingSession().RestorePending();
+            }
+            catch (Exception ex)
+            {
+                failures.Add("Keyboard lighting: " + ex.Message);
+            }
+
+            if (failures.Count == 0) return 0;
+
+            // Try again at the next sign-in rather than giving up.
+            try
+            {
+                AfkRecovery recovery = AfkRecovery.ForExecutable(Application.ExecutablePath);
+                if (recovery != null) recovery.Arm();
+            }
+            catch (Exception)
+            {
+            }
+
+            ShowError("An AFK session was interrupted, and AFKLocker could not put everything back.\r\n\r\n"
+                      + string.Join("\r\n", failures.ToArray()));
+            return 1;
+        }
+
+        /// <summary>
+        /// Run elevated by Setup when the user switches keyboard lighting on.
+        /// Detects and installs; any failure removes everything it installed.
+        /// The self-test is Setup's job, not this process's: it has to start the
+        /// tasks as the standard user a real AFK session runs as.
+        /// </summary>
+        private static int EnableKeyboardLighting(string userSid)
+        {
+            var tasks = new SchtasksScheduledTasks();
+            try
+            {
+                if (!KeyboardLightingHelper.IsAdministrator)
+                    throw new UnauthorizedAccessException("Windows did not grant administrator approval.");
+                if (string.IsNullOrEmpty(userSid))
+                    throw new ArgumentException("Open AFKLocker Setup to switch keyboard lighting on.");
+
+                KeyboardLightingDetection detection = new KeyboardLightingController(
+                    KeyboardLightingHelper.SnapshotPath(KeyboardLightingHelper.Directory)).Detect();
+                if (detection.Support == KeyboardLightingSupport.Unsupported)
+                    throw new InvalidOperationException("This PC's keyboard lighting is not supported.");
+                if (detection.Support == KeyboardLightingSupport.DetectionFailed)
+                    throw new InvalidOperationException("Keyboard lighting could not be detected: " + detection.Detail);
+
+                KeyboardLightingHelper.Install(AppDomain.CurrentDomain.BaseDirectory, userSid, tasks);
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                string cleanup = string.Empty;
+                try
+                {
+                    if (KeyboardLightingHelper.IsAdministrator) KeyboardLightingHelper.Uninstall(tasks);
+                }
+                catch (Exception undo)
+                {
+                    cleanup = "\r\n\r\nIt could not be fully removed again: " + undo.Message;
+                }
+
+                ShowError("Keyboard lighting could not be turned on.\r\n\r\n" + ex.Message + cleanup);
+                return 1;
+            }
+        }
+
+        private static int DisableKeyboardLighting()
+        {
+            try
+            {
+                KeyboardLightingHelper.Uninstall(new SchtasksScheduledTasks());
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                ShowError("Keyboard lighting could not be turned off cleanly.\r\n\r\n" + ex.Message);
+                return 1;
+            }
+        }
+
         private static int TurnDisplayOff()
         {
             try
@@ -197,83 +304,14 @@ namespace AFKLocker.App
             }
         }
 
-        private static int ConfigureKeyboardIntegration(bool uninstall)
-        {
-            if (!KeyboardLightingTaskInstaller.IsAdministrator)
-            {
-                try
-                {
-                    using (Process elevated = Process.Start(new ProcessStartInfo
-                    {
-                        FileName = Application.ExecutablePath,
-                        Arguments = uninstall
-                            ? "--uninstall-keyboard-integration"
-                            : "--install-keyboard-integration",
-                        UseShellExecute = true,
-                        Verb = "runas"
-                    }))
-                    {
-                        elevated.WaitForExit();
-                        return elevated.ExitCode;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    ShowError("Acer keyboard integration was not configured.\r\n\r\n" + ex.Message);
-                    return 1;
-                }
-            }
-
-            try
-            {
-                if (uninstall) KeyboardLightingTaskInstaller.Uninstall();
-                else
-                {
-                    KeyboardLightingTaskInstaller.Install(Application.ExecutablePath);
-
-                    // Prove this exact firmware accepts both operations now,
-                    // while Setup is open, instead of calling untested task
-                    // registration "ready" and failing at bedtime.
-                    using (var test = new ScheduledAcerKeyboardLightingSession())
-                    {
-                        test.Enter();
-                    }
-                }
-
-                MessageBox.Show(uninstall
-                        ? "Acer keyboard integration was removed."
-                        : "Acer keyboard integration is ready. AFKLocker will now turn the keyboard "
-                          + "lighting off during AFK mode and restore it afterwards.",
-                    "AFKLocker", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return 0;
-            }
-            catch (Exception ex)
-            {
-                if (!uninstall && KeyboardLightingTaskInstaller.IsAdministrator)
-                {
-                    try
-                    {
-                        KeyboardLightingTaskInstaller.Uninstall();
-                    }
-                    catch (Exception)
-                    {
-                    }
-                }
-                ShowError("Acer keyboard integration could not be configured.\r\n\r\n" + ex.Message);
-                return 1;
-            }
-        }
-
         private static void ShowUsage()
         {
             MessageBox.Show(
                 "AFKLocker\r\n\r\n" +
                 "Run with no arguments to lock the session.\r\n\r\n" +
                 "  --display-off   Turn the display off without locking.\r\n" +
-                "  --install-keyboard-integration\r\n" +
-                "                  Configure one-time elevated Acer RGB control.\r\n" +
                 "  --help          Show this message.\r\n\r\n" +
-                "Use \"AFKLocker Setup\" to check and configure Windows power settings.",
+                "Use \"AFKLocker Setup\" to check power settings and keyboard lighting.",
                 "AFKLocker",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);

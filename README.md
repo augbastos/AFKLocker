@@ -90,20 +90,33 @@ Opening the lid explicitly requests display-on. Closing it again requests displa
 keyboard or mouse input ends AFK mode instead, so AFKLocker stops owning the screens and restores
 normal Windows behaviour.
 
-### Acer keyboard lighting
+### Keyboard lighting
 
-On supported Acer Nitro and Predator machines, open **AFKLocker Setup → Configure Acer keyboard**
-once. Windows asks for administrator approval while two on-demand tasks are installed and tested.
-After that, AFK mode saves the complete Acer lighting state, sets keyboard brightness to zero, and
-restores the saved mode, colours and brightness when AFK ends. It does not replace the NitroSense
-profile.
+**AFKLocker Setup → Turn off keyboard lighting during AFK** (off by default). Setup detects on its
+own whether this PC exposes keyboard lighting AFKLocker knows how to drive and shows
+**Supported**, **Unsupported** or **Detection failed** — there is nothing to configure and no
+hardware to pick. When it is on, AFK mode saves the current lighting, turns it off, and restores
+the saved state when AFK ends, reporting an error if the firmware reads back something different.
+On unsupported hardware the option is simply unavailable.
+
+Detected today: Acer gaming laptops that expose the firmware's gaming WMI interface. Windows only
+lets administrators call it, so switching the option on asks for administrator approval **once**.
+AFKLocker then installs a small helper under `Program Files` and two on-demand scheduled tasks that
+can only turn the lighting off or restore it. Setup then runs off and restore once through those
+tasks as a self-test, and removes everything again if either fails. Switching the option off removes them,
+again with approval. Nothing runs in the background.
+
+Windows' own lighting API (Dynamic Lighting) is not used. Background control there needs package
+identity, the `com.microsoft.windows.lighting` app extension and the user ranking the app in
+Settings; AFKLocker is unpackaged, and has no foreground window while the session is locked.
 
 ## What it changes on your machine
 
 Manual mode changes only the AC and battery lid-close actions, only while AFK is active. It also
 makes a process-scoped keep-awake request. The original lid values are saved before the change,
-restored on keyboard/mouse input or unlock, and recovered on the next launch if the process was
-killed. Normal display, sleep and hibernate timeouts are not written.
+restored on keyboard/mouse input or unlock. If the session never gets that far — the process is
+killed, or Windows restarts overnight — a one-shot sign-in entry restores them at the next sign-in.
+Normal display, sleep and hibernate timeouts are not written.
 
 Automatic mode is different: Windows must already be configured before the physical close event
 arrives. If you explicitly enable Automatic mode, Setup can persist these settings on the active
@@ -158,11 +171,14 @@ processes. Paths become placeholders. Manufacturer and model are opt-in and star
 - **Windows 10 (1903+) and Windows 11**, x64. Needs .NET Framework 4.8, which both already have.
   The installer will run on Windows 8.1, but that has not been tested and 4.8 is not there by
   default.
-- No administrator rights needed for screen and power handling. The optional Acer keyboard setup
-  needs one administrator approval because the vendor WMI interface is privileged.
+- No administrator rights needed for screen and power handling. Switching keyboard lighting on
+  needs one administrator approval because the firmware interface behind it is privileged.
+- **Keyboard lighting control has not been tried on real hardware yet.** Its logic is tested
+  against simulated firmware only.
 - **No code signing.** SmartScreen warns; the attestation above is what exists instead.
-- **Physically tested on one machine.** Everything else is covered by tests against simulated
-  ones — which is why the diagnostics export exists.
+- **Earlier versions were physically tested on one machine; this version's screen, lid and
+  recovery changes have not been yet.** Everything else is covered by tests against simulated
+  machines — which is why the diagnostics export exists.
 - **Modern Standby (S0 low power idle) is a known gap.** Those machines do not use the classic
   sleep settings AFKLocker configures, so closed-lid behaviour is up to the firmware. Setup
   detects Modern Standby and says so rather than promising it will work.

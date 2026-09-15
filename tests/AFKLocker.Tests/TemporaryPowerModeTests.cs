@@ -144,21 +144,43 @@ namespace AFKLocker.Tests
             Assert.Equal(1, secondExecution.RestoreCount, "secondary execution request released");
         }
 
-        [Test("the Acer keyboard snapshot round-trips every byte and zone")]
-        private static void KeyboardSnapshotRoundTrips()
+        [Test("sign-in recovery restores lid values left by a session that never finished")]
+        private static void RecoverRestoresInterruptedSession()
         {
-            byte[] backlight = { 3, 5, 80, 0, 0, 10, 20, 30, 0, 1, 0, 0, 0, 0, 0 };
-            ulong[] zones = { 0x0011223300, 0x0044556600, 0x0077889900, 0x00AABBCC00 };
-            var original = new KeyboardLightingSnapshot(backlight, zones);
+            string path = NewSnapshotPath();
+            FakePowerConfiguration power = StockPower();
+            var stale = new PowerBackup { Scheme = power.ActiveScheme, SchemeName = power.SchemeName };
+            stale.RecordOriginal(PowerSettings.LidCloseAc.Key, (uint)LidAction.Sleep);
+            stale.RecordOriginal(PowerSettings.LidCloseDc.Key, (uint)LidAction.Hibernate);
+            File.WriteAllText(path, stale.Serialize());
+            power.Set(PowerSettings.LidCloseAc, (uint)LidAction.DoNothing);
+            power.Set(PowerSettings.LidCloseDc, (uint)LidAction.DoNothing);
 
-            KeyboardLightingSnapshot restored =
-                KeyboardLightingSnapshot.Deserialize(original.Serialize());
+            var recovery = new TemporaryPowerMode(power, new FakeExecutionState(), path);
+            Assert.True(recovery.HasPendingRestore, "the interrupted session is visible");
+            recovery.Recover();
 
-            Assert.Equal(Convert.ToBase64String(backlight),
-                Convert.ToBase64String(restored.Backlight), "backlight payload");
-            for (int index = 0; index < zones.Length; index++)
-                Assert.Equal(zones[index], restored.ZoneValues[index], "zone " + index);
-            Assert.Equal(16, restored.CreateSetterPayload().Length, "setter payload is exactly 16 bytes");
+            Assert.Equal((uint)LidAction.Sleep, power.Get(PowerSettings.LidCloseAc), "AC restored");
+            Assert.Equal((uint)LidAction.Hibernate, power.Get(PowerSettings.LidCloseDc), "DC restored");
+            Assert.False(recovery.HasPendingRestore, "nothing left to recover");
+        }
+
+        [Test("sign-in recovery leaves a session that is still running alone")]
+        private static void RecoverLeavesActiveSessionAlone()
+        {
+            string path = NewSnapshotPath();
+            FakePowerConfiguration power = StockPower();
+            var active = new TemporaryPowerMode(power, new FakeExecutionState(), path);
+            active.Enter();
+
+            new TemporaryPowerMode(power, new FakeExecutionState(), path).Recover();
+
+            Assert.Equal((uint)LidAction.DoNothing, power.Get(PowerSettings.LidCloseAc),
+                "the running session still owns the lid");
+            Assert.True(File.Exists(path), "its snapshot is untouched");
+
+            active.Dispose();
+            Assert.Equal((uint)LidAction.Sleep, power.Get(PowerSettings.LidCloseAc), "restored by its owner");
         }
     }
 }
