@@ -26,10 +26,11 @@ namespace AFKLocker.Watcher
     /// process is blocked in the message loop until Windows posts an event - and
     /// it makes no network requests of any kind.
     ///
-    /// What it deliberately does NOT do: change power settings, hold execution
-    /// state, or otherwise keep the machine awake. Staying awake with the lid
-    /// closed is the job of the power configuration applied by AFKLocker Setup.
-    /// This process only locks.
+    /// Each lock activation owns the same bounded AFK session as the desktop
+    /// shortcut: temporary lid values, a process-scoped keep-awake request,
+    /// display relight suppression and optional Acer keyboard darkness. Those
+    /// are restored when input or unlock ends the session. Automatic mode still
+    /// needs its explicitly persistent pre-close configuration.
     ///
     /// It also does not watch the keyboard. The hotkey is a reservation made
     /// with RegisterHotKey: Windows is told one combination and posts one
@@ -150,7 +151,7 @@ namespace AFKLocker.Watcher
 
                     sessionState.Start();
 
-                    var screens = new ScreenHolder(displays, inputMonitor);
+                    var screens = new ScreenHolder(locker, displays, inputMonitor);
 
                     // The window must exist before anything is registered on it.
                     if (!helperWindow.Create())
@@ -177,7 +178,7 @@ namespace AFKLocker.Watcher
                             //
                             // The policy already locked, so only the screens are
                             // left to deal with here.
-                            screens.Darken();
+                            screens.DarkenAlreadyLocked();
                         };
 
                         // After resume the lid may have moved while the machine was
@@ -201,7 +202,7 @@ namespace AFKLocker.Watcher
                             // "lock and darken" is how the two drift apart.
                             helperWindow.HotkeyPressed += delegate
                             {
-                                screens.Adopt(LockAction.LockAndDarken(locker, displays, inputMonitor));
+                                screens.StartAndLock();
                             };
                         }
 
@@ -277,48 +278,59 @@ namespace AFKLocker.Watcher
         /// </summary>
         private sealed class ScreenHolder : IDisposable
         {
+            private readonly ISessionLocker _locker;
             private readonly IDisplayController _displays;
             private readonly IUserInputMonitor _input;
-            private DisplayBlanker _current;
+            private AfkSession _current;
 
-            public ScreenHolder(IDisplayController displays, IUserInputMonitor input)
+            public ScreenHolder(ISessionLocker locker, IDisplayController displays, IUserInputMonitor input)
             {
+                _locker = locker;
                 _displays = displays;
                 _input = input;
             }
 
             /// <summary>Starts holding the screens dark. Does not lock; the caller already did.</summary>
-            public void Darken()
+            public void DarkenAlreadyLocked()
             {
-                Adopt(StartBlanker());
+                Replace(false);
             }
 
-            /// <summary>Takes ownership of a blanker somebody else started.</summary>
-            public void Adopt(DisplayBlanker blanker)
+            public void StartAndLock()
             {
-                DisplayBlanker previous = _current;
-                _current = blanker;
+                Replace(true);
+            }
 
-                if (previous != null && !ReferenceEquals(previous, blanker))
-                    previous.Dispose();
+            private void Replace(bool lockSession)
+            {
+                AfkSession previous = _current;
+                _current = null;
+                if (previous != null) previous.Dispose();
 
-                if (blanker != null)
+                AfkSession session = StartSession(lockSession);
+                if (session != null)
                 {
-                    DisplayBlanker adopted = blanker;
-                    blanker.Finished += delegate
+                    _current = session;
+                    AfkSession adopted = session;
+                    session.Finished += delegate
                     {
                         if (ReferenceEquals(_current, adopted)) _current = null;
                     };
                 }
             }
 
-            private DisplayBlanker StartBlanker()
+            private AfkSession StartSession(bool lockSession)
             {
                 try
                 {
-                    var blanker = new DisplayBlanker(_displays, _input);
-                    blanker.Start();
-                    return blanker;
+                    var power = new WindowsPowerConfiguration();
+                    return AfkSession.Start(
+                        _locker,
+                        _displays,
+                        _input,
+                        new TemporaryPowerMode(power, new WindowsExecutionStateController()),
+                        KeyboardLightingSessionFactory.Create(),
+                        lockSession);
                 }
                 catch (Exception)
                 {

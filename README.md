@@ -63,10 +63,11 @@ All three do the same thing: lock the session and put the screens out. Both opt-
 until you switch them on in Setup, and they share one helper — switching both on does not run two
 of them. Turning one off leaves the helper running if the other still needs it.
 
-Whichever mode you use, AFKLocker stays alive **while the session is locked** to look after the
-screens, and exits when you sign in.
+Whichever mode you use, AFKLocker stays alive only for the active AFK session to look after the
+screens. Keyboard or mouse input ends that session and restores the temporary settings.
 
-**Opening the lid never unlocks anything.** You sign in normally, every time.
+**Opening the lid wakes the screens but never unlocks anything.** If you close it again without
+using the keyboard or mouse, AFKLocker returns to the same dark AFK state.
 
 ### The hotkey is not a keyboard watcher
 
@@ -79,20 +80,34 @@ program already owns a combination, Setup says so while you are choosing it.
 
 ### The screens
 
-Locking does not darken a screen on its own, and on some machines Windows never darkens the lock
-screen at all. So AFKLocker asks for display-off after locking, and keeps asking, because Windows
-ignores the request while there has been recent input — which is exactly when you have just
-clicked.
+Locking does not darken a screen on its own, and closing a lid can reconfigure the display
+topology and wake an external monitor. AFKLocker immediately requests display-off, watches
+Windows' display-state notifications, and rejects every relight while the lid is closed. A short,
+fast retry burst covers the topology changes directly after lid close; a slower check remains for
+the whole AFK session.
 
-It gives up when you sign back in, and after twelve hours as a backstop. If you open the lid or
-use the keyboard once the screen has gone dark, it stands off for 90 seconds and starts that
-again on every further touch, so it will not darken a screen you are working at.
+Opening the lid explicitly requests display-on. Closing it again requests display-off. Real
+keyboard or mouse input ends AFK mode instead, so AFKLocker stops owning the screens and restores
+normal Windows behaviour.
 
-It keeps nothing awake — that is the power configuration's job.
+### Acer keyboard lighting
+
+On supported Acer Nitro and Predator machines, open **AFKLocker Setup → Configure Acer keyboard**
+once. Windows asks for administrator approval while two on-demand tasks are installed and tested.
+After that, AFK mode saves the complete Acer lighting state, sets keyboard brightness to zero, and
+restores the saved mode, colours and brightness when AFK ends. It does not replace the NitroSense
+profile.
 
 ## What it changes on your machine
 
-Only these, only on the active power plan, and only after you confirm:
+Manual mode changes only the AC and battery lid-close actions, only while AFK is active. It also
+makes a process-scoped keep-awake request. The original lid values are saved before the change,
+restored on keyboard/mouse input or unlock, and recovered on the next launch if the process was
+killed. Normal display, sleep and hibernate timeouts are not written.
+
+Automatic mode is different: Windows must already be configured before the physical close event
+arrives. If you explicitly enable Automatic mode, Setup can persist these settings on the active
+power plan:
 
 | Setting | Set to | When |
 |---|---|---|
@@ -106,7 +121,8 @@ it and can overheat it in a bag. The trade-off: if you use Automatic mode unplug
 ticking battery, closing the lid will lock and *then* let Windows sleep. Setup says so when that
 applies to you.
 
-Display timeouts are never written. AFKLocker keeps the *system* awake, not the *screen*.
+Display timeouts are never written in either mode. Manual mode never writes sleep or hibernate
+timeouts either.
 
 The previous values are backed up in plain text under `%LOCALAPPDATA%\AFKLocker` before anything
 is changed. If a change fails partway, AFKLocker puts back the ones that already happened — and
@@ -142,8 +158,8 @@ processes. Paths become placeholders. Manufacturer and model are opt-in and star
 - **Windows 10 (1903+) and Windows 11**, x64. Needs .NET Framework 4.8, which both already have.
   The installer will run on Windows 8.1, but that has not been tested and 4.8 is not there by
   default.
-- No administrator rights needed, unless Windows refuses a power setting — then Setup offers to
-  elevate and tells you why.
+- No administrator rights needed for screen and power handling. The optional Acer keyboard setup
+  needs one administrator approval because the vendor WMI interface is privileged.
 - **No code signing.** SmartScreen warns; the attestation above is what exists instead.
 - **Physically tested on one machine.** Everything else is covered by tests against simulated
   ones — which is why the diagnostics export exists.

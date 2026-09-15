@@ -3,6 +3,28 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- Manual AFK is now a bounded session instead of a permanent power-plan rewrite. It temporarily
+  changes only both lid-close actions, holds a process-scoped keep-awake request, and restores the
+  exact values on keyboard/mouse input or unlock. A crash-recovery snapshot prevents a killed
+  process from leaving normal lid behaviour changed. Legacy manual-mode backups are restored once.
+- The display guard now rejects every external-monitor relight while the lid is closed, with an
+  immediate asynchronous display-power request and a fast five-second retry burst after topology
+  changes. There is no twelve-hour expiry or ninety-second input pause.
+- Opening the lid wakes all displays without ending AFK mode. Closing it again returns to the dark
+  state; keyboard or mouse input ends AFK mode. The initial lid-state notification is treated as
+  synchronization so it cannot undo the first display-off request.
+
+### Added
+
+- Optional Acer Nitro/Predator keyboard integration through `AcerGamingFunction`. Setup installs
+  and tests two on-demand elevated tasks once; each AFK session saves the full NitroSense lighting
+  state, sets brightness to zero, and restores the original state on exit. A recovery snapshot
+  protects the profile if AFKLocker is killed.
+
 ## [0.5.3] - 2026-09-07
 
 ### Fixed

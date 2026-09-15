@@ -242,19 +242,20 @@ after the click or key that locked the machine, so the first request is very
 often discarded. Measured: with 94 seconds of idle, the same request took effect
 in 200 milliseconds.
 
-The answer is not a cleverer request, it is persistence — ask again every few
-seconds for as long as the session stays locked, and the first attempt after the
-person actually leaves is the one that lands.
+The answer is not a cleverer request, it is persistence. AFKLocker requests
+display-off immediately, watches `GUID_CONSOLE_DISPLAY_STATE`, and responds to
+every relight while the lid is closed. Lid close also starts a five-second burst
+at 200 ms intervals to cover rapid external-monitor topology changes.
 
 **3. `SendMessage` to `HWND_BROADCAST` can block forever.** A broadcast is
 synchronous against every top-level window on the desktop, so one application
 that has stopped pumping messages blocks the whole call with no timeout, and
 that gets likelier the longer a machine has been running. Observed live on a
 machine with about a week of uptime; the process had to be killed.
-`SendMessageTimeout` with `SMTO_ABORTIFHUNG` is used instead — noting that its
-timeout is **per window, not total**, so a 2-second timeout was measured taking
-9.9 seconds. Sending `SC_MONITORPOWER` to a window of our own instead of
-broadcasting does not work at all.
+`PostMessage` is used instead. It queues `SC_MONITORPOWER` to every top-level
+window without waiting for each one to answer, so one hung application cannot
+delay the next display or lid event. Sending `SC_MONITORPOWER` to a window of
+our own instead of broadcasting does not work at all.
 
 ### Knowing when to stop is the harder half
 
@@ -263,31 +264,56 @@ much darkens the screen of somebody standing at the machine typing their
 password, which is a malfunction. The two costs are not symmetrical, so anything
 ambiguous waits rather than acts.
 
-Exactly one thing ends the guard: **the session being unlocked**. Everything
-else only changes how long it waits.
+Keyboard or mouse input ends AFK mode and returns screen ownership to Windows.
+Unlocking also ends it. Opening the lid is deliberately different: it wakes the
+displays without ending AFK, so closing the lid again returns to darkness.
 
 | Signal | Response |
 |---|---|
-| Display lights up again | ask again — 1.2s while the lid is still settling, then a slower retry |
-| Keyboard or mouse used | leave it alone for 90 seconds, restarted by every further touch |
-| Lid opened | the same 90-second pause |
-| Request cap reached | back off to a slow retry; **never** give up while locked |
-| 12 hours | a backstop for a session that never reports being unlocked |
+| Display lights while lid is closed | request display-off immediately and start a fast retry burst |
+| Keyboard or mouse used | end AFK and restore temporary state |
+| Lid opened | request display-on; remain in AFK |
+| Lid closed again | request display-off and start a five-second retry burst |
+| Session unlocked | end AFK and restore temporary state |
 
 Two defects here were only ever visible on a real machine, and both are worth
 remembering because the code and the tests looked correct:
 
-- **The blanker assumed the display was on when it started.** The first request
-  usually lands, so the display is already off and Windows sends no state-change
-  notification — there was no change. The wrong assumption was never corrected,
-  a verification tick spent a request against it every 2.5 seconds, and the
-  whole budget was gone about twelve seconds after locking. Windows sends the
-  current state as soon as the notification is registered, so waiting for that
-  costs milliseconds and removes the guess.
-- **Lid-open produced a decision nobody carried out.** The pause was decided and
-  tested at the policy level and then thrown away, because the lid handler
-  passed its result to a method that only knew two of the four outcomes. Two
-  code paths for four outcomes, both of which compiled.
+- **The initial lid notification is not a transition.** Windows sends the
+  current state as soon as notification is registered. Treating an initial
+  "open" as a physical opening would undo the display-off request immediately
+  after launch, so the first lid value is synchronization only.
+- **Lid-open must be an executed action.** It explicitly requests display-on;
+  the same state machine then executes the later close as display-off. A test
+  enumerates every decision so adding one without an execution path fails.
+
+### Power state belongs to the AFK session
+
+Manual mode never writes display, sleep, or hibernate timeouts. Immediately
+before locking it saves the active plan's AC and battery lid-close actions,
+temporarily sets only those actions to `Do nothing`, and calls
+`SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`. On input or
+unlock it restores the lid values and clears the execution request.
+
+The original lid values are written atomically to `power-session.txt` before
+the first power-plan write. A file lock prevents overlapping AFKLocker processes
+from overwriting that snapshot. If the owning process is killed, the OS releases
+the lock and the next activation restores the stale values before capturing a
+new session. Automatic lid-triggered mode remains explicitly persistent because
+Windows needs the lid action configured before the close event arrives.
+
+### Acer keyboard lighting
+
+The optional Acer integration uses the vendor's `AcerGamingFunction` WMI class.
+Before AFK it stores the complete backlight payload and all four RGB-zone values,
+then changes only the brightness byte to zero. Exit restores the zones and the
+original payload. The snapshot remains after a crash and is restored before a
+new one can be captured.
+
+That WMI surface normally requires elevation. Setup therefore installs two
+on-demand Task Scheduler entries under the current interactive user at highest
+run level and tests both operations once. Normal AFK activation only invokes
+those already-approved tasks; it never prompts at bedtime.
 
 The other trap is that input immediately after locking **is** the click that did
 the locking. Treating it as somebody arriving starts the 90-second pause against

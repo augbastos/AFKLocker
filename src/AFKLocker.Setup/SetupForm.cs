@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Windows.Forms;
@@ -81,6 +83,7 @@ namespace AFKLocker.Setup
         private readonly Button _applyButton = new Button();
         private readonly Button _restoreButton = new Button();
         private readonly Button _diagnosticsButton = new Button();
+        private readonly Button _keyboardButton = new Button();
         private readonly Button _closeButton = new Button();
 
         private ReadinessReport _report;
@@ -177,7 +180,7 @@ namespace AFKLocker.Setup
                 Location = new Point(EdgeMargin + 2, 52)
             };
 
-            StyleSectionHeader(_readinessHeader, "CLOSED-LID READINESS");
+            StyleSectionHeader(_readinessHeader, "AUTOMATIC-MODE READINESS");
             _planLabel.ForeColor = Color.FromArgb(94, 94, 94);
             _planLabel.AutoSize = true;
 
@@ -195,7 +198,7 @@ namespace AFKLocker.Setup
             _summaryLabel.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
             _summaryLabel.AutoSize = true;
 
-            _batteryCheck.Text = "Also keep running on battery";
+            _batteryCheck.Text = "Automatic mode: also keep running on battery";
             _batteryCheck.AutoSize = true;
             _batteryCheck.CheckedChanged += (s, e) => UpdateButtons();
 
@@ -210,14 +213,16 @@ namespace AFKLocker.Setup
             _manualRadio.Checked = true;
             _manualRadio.CheckedChanged += OnModeChanged;
             StyleNote(_manualNote, width - 20, "Double-click AFKLocker before closing the lid. "
-                                               + "Nothing of AFKLocker stays running.");
+                                               + "Power behaviour changes only during that AFK session "
+                                               + "and is restored when you return.");
 
             _automaticRadio.Text = "Automatic";
             _automaticRadio.AutoSize = true;
             _automaticRadio.CheckedChanged += OnModeChanged;
             StyleNote(_automaticNote, width - 20,
                 "Lock Windows automatically whenever the laptop lid closes. A small background "
-                + "watcher runs while you are signed in. Opening the lid never unlocks anything.");
+                + "watcher runs while you are signed in. This mode requires the persistent power "
+                + "configuration shown on the left. Opening the lid never unlocks anything.");
 
             // AutoSize with a width cap, like the other notes. A fixed height
             // silently clipped the longer status messages mid-sentence.
@@ -263,6 +268,13 @@ namespace AFKLocker.Setup
             _diagnosticsButton.Anchor = AnchorStyles.Top | AnchorStyles.Left;
             _diagnosticsButton.Click += OnDiagnosticsClicked;
 
+            _keyboardButton.Text = ScheduledAcerKeyboardLightingSession.IsInstalled
+                ? "Acer keyboard ready"
+                : "Configure Acer keyboard";
+            _keyboardButton.Size = new Size(170, 32);
+            _keyboardButton.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+            _keyboardButton.Click += OnKeyboardIntegrationClicked;
+
             _closeButton.Text = "Close";
             _closeButton.Size = new Size(100, 32);
             _closeButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
@@ -278,7 +290,7 @@ namespace AFKLocker.Setup
                 _batteryCheck, _batteryNote,
                 _lockHeader, _manualRadio, _manualNote, _automaticRadio, _automaticNote, _watcherStatus,
                 _hotkeyHeader, _hotkeyCheck, _hotkeyBox, _hotkeyClear, _hotkeyNote, _hotkeyStatus,
-                _applyButton, _restoreButton, _diagnosticsButton, _closeButton
+                _applyButton, _restoreButton, _diagnosticsButton, _keyboardButton, _closeButton
             });
         }
 
@@ -378,12 +390,13 @@ namespace AFKLocker.Setup
             _applyButton.Location = new Point(EdgeMargin, buttonRow);
             _restoreButton.Location = new Point(_applyButton.Right + 8, buttonRow);
             _diagnosticsButton.Location = new Point(_restoreButton.Right + 8, buttonRow);
+            _keyboardButton.Location = new Point(_diagnosticsButton.Right + 8, buttonRow);
 
             // Right-aligned, but never on top of Diagnostics. The old code
             // trusted ClientSize.Width, which shrinks when a scrollbar appears -
             // and that is exactly when the two collided.
             int closeX = ClientSize.Width - EdgeMargin - _closeButton.Width;
-            int earliestCloseX = _diagnosticsButton.Right + 16;
+            int earliestCloseX = _keyboardButton.Right + 16;
             _closeButton.Location = new Point(Math.Max(closeX, earliestCloseX), buttonRow);
 
             int desired = buttonRow + _applyButton.Height + 20;
@@ -401,8 +414,12 @@ namespace AFKLocker.Setup
                 _planLabel.Text = "Power plan: " + (snapshot.SchemeName ?? snapshot.Scheme.ToString("D"));
                 int contentHeight = RenderChecks(_report);
 
-                _summaryLabel.Text = _report.Summary;
-                _summaryLabel.ForeColor = _report.IsReady
+                AutoLockStatus status = _autoLock.GetStatus();
+                bool manual = status.Mode == LockMode.Manual;
+                _summaryLabel.Text = manual
+                    ? "Manual AFK is session-only; normal power and display timeouts stay unchanged."
+                    : _report.Summary;
+                _summaryLabel.ForeColor = manual || _report.IsReady
                     ? Color.FromArgb(16, 124, 16)
                     : Color.FromArgb(196, 43, 28);
 
@@ -743,7 +760,7 @@ namespace AFKLocker.Setup
                 ShowMessage("Could not turn on automatic locking.\r\n\r\n" + ex.Message, MessageBoxIcon.Warning);
             }
 
-            RefreshLockBehaviour();
+            Refresh(showErrors: false);
         }
 
         private void DisableAutomatic()
@@ -754,13 +771,18 @@ namespace AFKLocker.Setup
                 if (!result.Success)
                     ShowMessage(DescribeFailure("Automatic locking was switched off, but not cleanly.",
                         result), MessageBoxIcon.Warning);
+                else
+                {
+                    var configurator = new PowerConfigurator(_power, _backups);
+                    if (configurator.HasBackup) configurator.RestoreAll();
+                }
             }
             catch (Exception ex)
             {
                 ShowMessage("Could not turn off automatic locking.\r\n\r\n" + ex.Message, MessageBoxIcon.Warning);
             }
 
-            RefreshLockBehaviour();
+            Refresh(showErrors: false);
         }
 
         /// <summary>
@@ -806,6 +828,17 @@ namespace AFKLocker.Setup
         {
             bool hasBackup = _backups.ListSchemes().Any();
             _restoreButton.Enabled = hasBackup;
+
+            AutoLockStatus lockStatus = _autoLock.GetStatus();
+            bool automatic = lockStatus.Mode == LockMode.Automatic;
+            _batteryCheck.Enabled = automatic;
+
+            if (!automatic)
+            {
+                _applyButton.Enabled = false;
+                _applyButton.Text = "Session-only in Manual";
+                return;
+            }
 
             if (_report == null)
             {
@@ -1007,6 +1040,53 @@ namespace AFKLocker.Setup
 
             // A self-test can start and stop the watcher, so re-read the state.
             RefreshLockBehaviour();
+        }
+
+        private void OnKeyboardIntegrationClicked(object sender, EventArgs e)
+        {
+            string appPath = Path.Combine(Application.StartupPath, "AFKLocker.exe");
+            if (!File.Exists(appPath))
+            {
+                ShowMessage("AFKLocker.exe was not found next to Setup.", MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                int exitCode;
+                if (KeyboardLightingTaskInstaller.IsAdministrator)
+                {
+                    KeyboardLightingTaskInstaller.Install(appPath);
+                    exitCode = 0;
+                }
+                else
+                {
+                    using (Process process = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = appPath,
+                        Arguments = "--install-keyboard-integration",
+                        UseShellExecute = true,
+                        Verb = "runas"
+                    }))
+                    {
+                        process.WaitForExit();
+                        exitCode = process.ExitCode;
+                    }
+                }
+
+                if (exitCode != 0 || !ScheduledAcerKeyboardLightingSession.IsInstalled)
+                    throw new InvalidOperationException("Windows did not confirm both scheduled tasks.");
+
+                _keyboardButton.Text = "Acer keyboard ready";
+                ShowMessage("Keyboard lighting is configured. AFK mode will temporarily turn it off "
+                            + "and restore the exact previous Acer profile when you return.",
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                ShowMessage("Acer keyboard lighting could not be configured.\r\n\r\n" + ex.Message,
+                    MessageBoxIcon.Warning);
+            }
         }
 
         private DiagnosticReport RunSelfTest(SelfTestOptions options)

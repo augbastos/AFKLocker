@@ -1,43 +1,25 @@
 using System;
-using System.Threading;
+using System.Diagnostics;
 using System.Windows.Forms;
 using AFKLocker.Core;
 
 namespace AFKLocker.App
 {
     /// <summary>
-    /// The everyday entry point: lock the session, put the screens out, exit.
+    /// The everyday entry point: enter one temporary AFK session.
     ///
     /// Built as a Windows application rather than a console application so that
-    /// double-clicking it never flashes a console window. What keeps the machine
-    /// running with the lid closed is the power configuration, not a process.
+    /// double-clicking it never flashes a console window. It stays alive only
+    /// while AFK: a process-scoped execution request prevents idle sleep, the
+    /// current lid-close values are temporarily set to Do nothing, and display
+    /// notifications keep every monitor dark while the lid is closed.
     ///
-    /// It does linger, and only for the screens. Locking alone does not darken
-    /// them, and Windows will not always darken them either: on this project's
-    /// test machine the console lock display timeout never fires at all, and a
-    /// display-off request made straight after the click that locked the machine
-    /// is ignored because that click counts as recent user input.
-    ///
-    /// So after locking, this stays alive to keep asking until the screens are
-    /// actually dark, and to put them out again if anything wakes them. It ends
-    /// when the session is unlocked - which is the moment a lit screen becomes
-    /// correct - and the process exits with it.
-    ///
-    /// That is still not resident in the sense the project promises: nothing
-    /// exists while you are working, only while the machine is locked, and it
-    /// holds no execution state and keeps nothing awake.
+    /// Opening the lid wakes the displays without ending AFK. Keyboard/mouse
+    /// input or unlocking ends the session, restores power and keyboard state,
+    /// and exits the process. Nothing remains resident during normal use.
     /// </summary>
     internal static class Program
     {
-        /// <summary>
-        /// How long after the blanking window closes before the process is
-        /// killed outright. This is a net under a net: nothing should ever reach
-        /// it, and if something does, a stuck AFKLocker is worse than an abrupt
-        /// one. An earlier version had no net, hung, and every later lock
-        /// silently stopped darkening the screen.
-        /// </summary>
-        private static readonly TimeSpan WatchdogGrace = TimeSpan.FromMinutes(5);
-
         [STAThread]
         private static int Main(string[] args)
         {
@@ -52,6 +34,18 @@ namespace AFKLocker.App
                 case StartupMode.DisplayOff:
                     return TurnDisplayOff();
 
+                case StartupMode.KeyboardOff:
+                    return KeyboardLightingTaskWorker.Run(false);
+
+                case StartupMode.KeyboardRestore:
+                    return KeyboardLightingTaskWorker.Run(true);
+
+                case StartupMode.InstallKeyboardIntegration:
+                    return ConfigureKeyboardIntegration(false);
+
+                case StartupMode.UninstallKeyboardIntegration:
+                    return ConfigureKeyboardIntegration(true);
+
                 default:
                     return LockSession();
             }
@@ -61,6 +55,10 @@ namespace AFKLocker.App
         {
             Lock,
             DisplayOff,
+            KeyboardOff,
+            KeyboardRestore,
+            InstallKeyboardIntegration,
+            UninstallKeyboardIntegration,
             Help
         }
 
@@ -77,6 +75,14 @@ namespace AFKLocker.App
                     case "displayoff":
                     case "d":
                         return StartupMode.DisplayOff;
+                    case "keyboard-off":
+                        return StartupMode.KeyboardOff;
+                    case "keyboard-restore":
+                        return StartupMode.KeyboardRestore;
+                    case "install-keyboard-integration":
+                        return StartupMode.InstallKeyboardIntegration;
+                    case "uninstall-keyboard-integration":
+                        return StartupMode.UninstallKeyboardIntegration;
                     case "help":
                     case "h":
                     case "?":
@@ -89,62 +95,84 @@ namespace AFKLocker.App
 
         private static int LockSession()
         {
-            StartWatchdog();
-
-            DisplayBlanker blanker;
+            AfkSession session;
             try
             {
-                // The same call the global hotkey makes, so the two can never
-                // drift into doing different things.
-                blanker = LockAction.LockAndDarken(new WindowsSessionLocker(),
-                    new WindowsDisplayController(), new WindowsUserInputMonitor());
+                RestoreLegacyPersistentConfiguration();
+
+                var power = new WindowsPowerConfiguration();
+                session = LockAction.EnterAfkMode(
+                    new WindowsSessionLocker(),
+                    new WindowsDisplayController(),
+                    new WindowsUserInputMonitor(),
+                    new TemporaryPowerMode(power, new WindowsExecutionStateController()),
+                    KeyboardLightingSessionFactory.Create());
             }
             catch (Exception ex)
             {
-                // A failure here is rare, but silently doing nothing would leave
-                // the user believing the machine is locked when it is not.
-                ShowError("AFKLocker could not lock this session.\r\n\r\n" + ex.Message);
+                ShowError("AFKLocker could not enter AFK mode.\r\n\r\n" + ex.Message);
                 return 1;
             }
 
-            // The lock is the guarantee and it is already done. Everything below
-            // is about the screens, and nothing below can undo it.
-            KeepScreensDark(blanker);
+            RunAfkSession(session);
+
+            if (!string.IsNullOrEmpty(session.RestoreError))
+                ShowError("AFK mode ended, but the temporary lid settings could not be fully restored. "
+                          + "Run AFKLocker again to retry recovery.\r\n\r\n" + session.RestoreError);
+
+            if (!string.IsNullOrEmpty(session.LightingError))
+                ShowError("AFK mode worked, but the Acer keyboard lighting could not be controlled.\r\n\r\n"
+                          + session.LightingError);
             return 0;
         }
 
         /// <summary>
-        /// Asks for display-off and holds that for a short while, so the lid
-        /// closing afterwards does not leave a lit lock screen behind.
-        ///
-        /// Deliberately after the lock, never before: a dark screen on a session
-        /// that failed to lock would look locked without being locked.
+        /// Versions through 0.5.x changed the active plan permanently. Manual
+        /// mode no longer needs that configuration, so put the saved originals
+        /// back once before capturing the temporary values for this session.
+        /// Automatic lid locking still relies on the old configuration and is
+        /// therefore left alone until the user switches it off.
         /// </summary>
-        private static void KeepScreensDark(DisplayBlanker blanker)
+        private static void RestoreLegacyPersistentConfiguration()
+        {
+            AutoLockSettings settings = new FileSettingsStore().Load();
+            if (settings.Mode == LockMode.Automatic) return;
+
+            var configurator = new PowerConfigurator(
+                new WindowsPowerConfiguration(), new FileBackupStore());
+            if (!configurator.HasBackup) return;
+
+            RestoreResult result = configurator.RestoreAll();
+            if (result.Skipped.Count > 0)
+                throw new PowerConfigurationException(
+                    "The old permanent power configuration could not be fully restored. "
+                    + "Open AFKLocker Setup and choose Restore previous before trying again.");
+        }
+
+        /// <summary>
+        /// Pumps the notification window until input/unlock finishes AFK mode.
+        /// </summary>
+        private static void RunAfkSession(AfkSession session)
         {
             // Deliberately no "only one instance" lock here. The obvious design
             // is a mutex so two locks in a row cannot both blank, and it is a
             // trap: when the holder gets stuck, every later lock skips blanking
             // and says nothing. Two blankers briefly asking for the same thing
             // is harmless; a silent opt-out is not.
-            if (blanker == null) return;
+            if (session == null) return;
 
             try
             {
-                using (blanker)
+                using (session)
                 {
                     bool finished = false;
-                    blanker.Finished += delegate
+                    session.Finished += delegate
                     {
                         finished = true;
                         Application.ExitThread();
                     };
 
-                    // The blanker is already started and can already have
-                    // finished - Windows refusing the registration, say - and
-                    // pumping after that would wait for a message loop nothing
-                    // is going to end.
-                    if (!blanker.HasFinished && !finished) Application.Run();
+                    if (!session.HasFinished && !finished) Application.Run();
                 }
             }
             catch (Exception)
@@ -153,24 +181,6 @@ namespace AFKLocker.App
                 // an error box about a monitor after the screen went dark would
                 // be worse than the problem.
             }
-        }
-
-        /// <summary>
-        /// Guarantees this process dies. It is a background thread, so a normal
-        /// exit kills it first and it costs nothing; it only ever gets to act if
-        /// the message loop is stuck, which is exactly the case that must never
-        /// leave an AFKLocker running for hours.
-        /// </summary>
-        private static void StartWatchdog()
-        {
-            var watchdog = new Thread(delegate()
-            {
-                Thread.Sleep(DisplayBlanker.DefaultTimeLimit + WatchdogGrace);
-                Environment.Exit(0);
-            });
-
-            watchdog.IsBackground = true;
-            watchdog.Start();
         }
 
         private static int TurnDisplayOff()
@@ -187,12 +197,81 @@ namespace AFKLocker.App
             }
         }
 
+        private static int ConfigureKeyboardIntegration(bool uninstall)
+        {
+            if (!KeyboardLightingTaskInstaller.IsAdministrator)
+            {
+                try
+                {
+                    using (Process elevated = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = Application.ExecutablePath,
+                        Arguments = uninstall
+                            ? "--uninstall-keyboard-integration"
+                            : "--install-keyboard-integration",
+                        UseShellExecute = true,
+                        Verb = "runas"
+                    }))
+                    {
+                        elevated.WaitForExit();
+                        return elevated.ExitCode;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    ShowError("Acer keyboard integration was not configured.\r\n\r\n" + ex.Message);
+                    return 1;
+                }
+            }
+
+            try
+            {
+                if (uninstall) KeyboardLightingTaskInstaller.Uninstall();
+                else
+                {
+                    KeyboardLightingTaskInstaller.Install(Application.ExecutablePath);
+
+                    // Prove this exact firmware accepts both operations now,
+                    // while Setup is open, instead of calling untested task
+                    // registration "ready" and failing at bedtime.
+                    using (var test = new ScheduledAcerKeyboardLightingSession())
+                    {
+                        test.Enter();
+                    }
+                }
+
+                MessageBox.Show(uninstall
+                        ? "Acer keyboard integration was removed."
+                        : "Acer keyboard integration is ready. AFKLocker will now turn the keyboard "
+                          + "lighting off during AFK mode and restore it afterwards.",
+                    "AFKLocker", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                if (!uninstall && KeyboardLightingTaskInstaller.IsAdministrator)
+                {
+                    try
+                    {
+                        KeyboardLightingTaskInstaller.Uninstall();
+                    }
+                    catch (Exception)
+                    {
+                    }
+                }
+                ShowError("Acer keyboard integration could not be configured.\r\n\r\n" + ex.Message);
+                return 1;
+            }
+        }
+
         private static void ShowUsage()
         {
             MessageBox.Show(
                 "AFKLocker\r\n\r\n" +
                 "Run with no arguments to lock the session.\r\n\r\n" +
                 "  --display-off   Turn the display off without locking.\r\n" +
+                "  --install-keyboard-integration\r\n" +
+                "                  Configure one-time elevated Acer RGB control.\r\n" +
                 "  --help          Show this message.\r\n\r\n" +
                 "Use \"AFKLocker Setup\" to check and configure Windows power settings.",
                 "AFKLocker",
