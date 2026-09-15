@@ -133,7 +133,8 @@ $coreDll = Join-Path $OutputDirectory 'AFKLocker.Core.dll'
 Invoke-Csc -Target 'library' -Output $coreDll `
     -Sources (Get-Sources 'src\AFKLocker.Core' -IncludeVersionInfo) `
     -References @('System.dll', 'System.Core.dll', 'System.IO.Compression.dll',
-                  'System.IO.Compression.FileSystem.dll')
+                  'System.IO.Compression.FileSystem.dll', 'System.Management.dll',
+                  'System.Windows.Forms.dll')
 
 Invoke-Csc -Target 'winexe' -Output (Join-Path $OutputDirectory 'AFKLocker.exe') `
     -Sources (Get-Sources 'src\AFKLocker.App' -IncludeVersionInfo) `

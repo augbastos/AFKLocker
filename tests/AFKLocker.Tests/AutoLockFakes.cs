@@ -196,10 +196,16 @@ namespace AFKLocker.Tests
     internal sealed class FakeDisplayController : IDisplayController
     {
         public int TurnOffCount;
+        public int TurnOnCount;
 
         public void TurnOff()
         {
             TurnOffCount++;
+        }
+
+        public void TurnOn()
+        {
+            TurnOnCount++;
         }
     }
 

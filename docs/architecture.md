@@ -46,7 +46,9 @@ flag is most of what "feels like a real utility" means in practice.
 explicitly opt-in and off by default.**
 
 The original design note said "no background service, no tray icon, no scheduled task", and that
-is still true with both features off, and still the reason that is the default: what keeps the
+is still true with both features off, and still the reason that is the default. (Switching keyboard
+lighting on adds two scheduled tasks, but they have no triggers and only run when an AFK session
+starts or ends them.) What keeps the
 machine awake with the lid closed is the Windows power configuration, which persists on its own. A
 process holding that open would add a failure mode, an attack surface and a thing to uninstall, in
 exchange for nothing.
@@ -242,19 +244,20 @@ after the click or key that locked the machine, so the first request is very
 often discarded. Measured: with 94 seconds of idle, the same request took effect
 in 200 milliseconds.
 
-The answer is not a cleverer request, it is persistence — ask again every few
-seconds for as long as the session stays locked, and the first attempt after the
-person actually leaves is the one that lands.
+The answer is not a cleverer request, it is persistence. AFKLocker requests
+display-off immediately, watches `GUID_CONSOLE_DISPLAY_STATE`, and responds to
+every relight while the lid is closed. Lid close also starts a five-second burst
+at 200 ms intervals to cover rapid external-monitor topology changes.
 
 **3. `SendMessage` to `HWND_BROADCAST` can block forever.** A broadcast is
 synchronous against every top-level window on the desktop, so one application
 that has stopped pumping messages blocks the whole call with no timeout, and
 that gets likelier the longer a machine has been running. Observed live on a
 machine with about a week of uptime; the process had to be killed.
-`SendMessageTimeout` with `SMTO_ABORTIFHUNG` is used instead — noting that its
-timeout is **per window, not total**, so a 2-second timeout was measured taking
-9.9 seconds. Sending `SC_MONITORPOWER` to a window of our own instead of
-broadcasting does not work at all.
+`PostMessage` is used instead. It queues `SC_MONITORPOWER` to every top-level
+window without waiting for each one to answer, so one hung application cannot
+delay the next display or lid event. Sending `SC_MONITORPOWER` to a window of
+our own instead of broadcasting does not work at all.
 
 ### Knowing when to stop is the harder half
 
@@ -263,37 +266,138 @@ much darkens the screen of somebody standing at the machine typing their
 password, which is a malfunction. The two costs are not symmetrical, so anything
 ambiguous waits rather than acts.
 
-Exactly one thing ends the guard: **the session being unlocked**. Everything
-else only changes how long it waits.
+Keyboard or mouse input ends AFK mode and returns screen ownership to Windows.
+Unlocking also ends it. Opening the lid is deliberately different: it wakes the
+displays without ending AFK, so closing the lid again returns to darkness.
 
 | Signal | Response |
 |---|---|
-| Display lights up again | ask again — 1.2s while the lid is still settling, then a slower retry |
-| Keyboard or mouse used | leave it alone for 90 seconds, restarted by every further touch |
-| Lid opened | the same 90-second pause |
-| Request cap reached | back off to a slow retry; **never** give up while locked |
-| 12 hours | a backstop for a session that never reports being unlocked |
+| Display lights while lid is closed | request display-off immediately and start a fast retry burst |
+| Keyboard or mouse used | end AFK and restore temporary state |
+| Lid opened | request display-on; remain in AFK |
+| Lid closed again | request display-off and start a five-second retry burst |
+| Session unlocked | end AFK and restore temporary state |
 
 Two defects here were only ever visible on a real machine, and both are worth
 remembering because the code and the tests looked correct:
 
-- **The blanker assumed the display was on when it started.** The first request
-  usually lands, so the display is already off and Windows sends no state-change
-  notification — there was no change. The wrong assumption was never corrected,
-  a verification tick spent a request against it every 2.5 seconds, and the
-  whole budget was gone about twelve seconds after locking. Windows sends the
-  current state as soon as the notification is registered, so waiting for that
-  costs milliseconds and removes the guess.
-- **Lid-open produced a decision nobody carried out.** The pause was decided and
-  tested at the policy level and then thrown away, because the lid handler
-  passed its result to a method that only knew two of the four outcomes. Two
-  code paths for four outcomes, both of which compiled.
+- **The initial lid notification is not a transition.** Windows sends the
+  current state as soon as notification is registered. Treating an initial
+  "open" as a physical opening would undo the display-off request immediately
+  after launch, so the first lid value is synchronization only.
+- **Lid-open must be an executed action.** It explicitly requests display-on;
+  the same state machine then executes the later close as display-off. A test
+  enumerates every decision so adding one without an execution path fails.
+
+### Power state belongs to the AFK session
+
+Manual mode never writes display, sleep, or hibernate timeouts. Immediately
+before locking it saves the active plan's AC and battery lid-close actions,
+temporarily sets only those actions to `Do nothing`, and calls
+`SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`. On input or
+unlock it restores the lid values and clears the execution request.
+
+The original lid values are written atomically to `power-session.txt` before
+the first power-plan write. A file lock prevents overlapping AFKLocker processes
+from overwriting that snapshot. If the owning process is killed, the OS releases
+the lock and the next activation restores the stale values before capturing a
+new session. Automatic lid-triggered mode remains explicitly persistent because
+Windows needs the lid action configured before the close event arrives.
+
+"The next activation" may never come, and a restart for an update overnight
+ends the process without any cleanup. So each session also writes a one-shot
+`HKCU\...\RunOnce` entry, `AFKLocker.exe --recover`, before it changes anything,
+and removes it once nothing is left to restore. It is judged by what is still
+saved rather than by which call threw: an overlapping session may own the lid
+snapshot, and keyboard lighting can report an error after it was restored.
+
+### Keyboard lighting
+
+```
+AfkSession ── IKeyboardLightingSession ── ElevatedKeyboardLightingSession
+                                              │ schtasks /Run (off | restore)
+                                              ▼
+                     AFKLocker.exe in Program Files, elevated by Task Scheduler
+                                              │
+                               KeyboardLightingController
+                        detect → capture → persist → off … restore
+                                              │
+                                 IKeyboardLightingBackend[]
+                                 └─ AcerGamingKeyboardBackend
+```
+
+The UI and the session know only *supported / unsupported / detection failed*,
+*off* and *restore*. Vendor detail lives behind `IKeyboardLightingBackend`:
+`IsPresent` (fast, side-effect free, no administrator rights), `Capture`,
+`TurnOff`, `Restore`. Adding hardware means one class and one entry in
+`KnownBackends`; nothing else changes.
+
+**Why not something generic.** These were checked first:
+
+- *Windows Dynamic Lighting* (`Windows.Devices.Lights.LampArray`, HID usage page
+  0x59) is the only OS-level standard. Windows gives control to the foreground
+  app, or to a background app only when it has package identity (MSIX or a
+  sparse package), declares the `com.microsoft.windows.lighting` app extension,
+  and the user ranks it in Settings. A locked session has no AFKLocker
+  foreground window, and AFKLocker is not packaged. Keyboards that do not
+  implement LampArray are not reachable through it at all.
+- *HID consumer-page keyboard backlight usages* exist, but Windows has no
+  keyboard-backlight API built on them; using them would mean raw HID reports
+  written per device, which is a per-vendor backend again.
+- *OpenRGB* covers many peripherals and some laptop keyboards through its SDK
+  server, but only while the user runs OpenRGB with the server enabled. Which
+  laptop keyboards it supports was not checked for this change. It is a
+  reasonable future backend for people who already run it; it cannot be the
+  default path.
+
+**Acer backend.** `AcerGamingFunction` in `root\WMI`. Detection reads only the
+class definition, which a standard user may do. Signatures are not uniform: at
+least one firmware revision declares no input for `GetGamingKBBacklight` and,
+among the lighting methods, a separate `gmReturn` only on that getter, while
+third-party tools pass a selector byte to the same getter. So the WMI layer fills in
+only parameters a method declares. Off takes the captured 15-byte configuration,
+pads it to the setter's 16 bytes and sets the brightness byte to zero; restore
+writes the captured bytes back. Both are read back. Zone colours are captured
+and compared after restore, and rewritten only if a static-mode backlight write
+disturbed them — writing zones in an effect mode would replace the effect.
+
+**Elevation.** Windows refuses these method calls from a standard user with
+`Access denied`, so this backend cannot avoid elevation.
+Switching the feature on is the only prompt: an elevated
+`AFKLocker.exe --enable-keyboard-lighting <sid>` copies `AFKLocker.exe` and
+`AFKLocker.Core.dll` into `%ProgramFiles%\AFKLocker Keyboard Lighting`,
+and registers two trigger-less tasks for that user at highest run level; any
+failure removes what it installed. Setup then runs off and restore once through
+Task Scheduler as a self-test from the *unelevated* process, because a standard
+user starting those tasks is exactly what every AFK session does. If the test
+fails, Setup removes the helper again.
+
+The tasks never run the per-user install. That folder is writable without
+elevation, and a task that runs a user-writable executable elevated is a silent
+UAC bypass for anything running as that user. For the same reason the helper
+keeps its snapshot and results next to itself: an elevated process never writes
+where a standard user can plant a link.
+
+One trade-off remains and is accepted, not solved: the approval prompt itself
+elevates `AFKLocker.exe` from the install folder, and a per-user install folder
+is writable by anything running as that user. That is the same exposure Setup
+already has when it relaunches itself elevated to write power settings, and it
+always takes a human approving a prompt that names an unverified publisher. The
+line the task design holds is that nothing user-writable is ever elevated
+*silently*. Pinning a signature would close it, but releases are not code-signed;
+installing for all users (into Program Files) removes it today.
+
+**Protocol.** The session cannot delete files in Program Files, so each result
+carries a sequence number. The session reads the current number, starts the
+task, and waits (15 s at most) for a higher one. `Enter` only starts *off*, so
+display-off never waits on firmware; `Dispose` waits for *off* to finish before
+starting *restore*, because a restore that ran first would find nothing to
+restore. The tasks queue rather than drop a second start. The snapshot is
+written before anything changes and a stale one is restored before a new capture.
 
 The other trap is that input immediately after locking **is** the click that did
-the locking. Treating it as somebody arriving starts the 90-second pause against
-the very action that asked for the screen to go out, so input carries that
-meaning only once the screen has actually been dark. Lid-open carries it
-immediately, because nobody opens a laptop by accident on their way out.
+the locking. Input is ignored for the first 1.5 seconds of a session, so the
+mouse-up of the activating double-click cannot end AFK mode.
 
 ### Machines this cannot fix
 
@@ -312,11 +416,11 @@ detected and reported rather than promised:
 
 ### What this costs
 
-`AFKLocker.exe` stays alive while the session is locked and exits when it is
-unlocked. That is not resident in the sense the project promises — nothing
-exists while you are working — and it holds no execution state and keeps nothing
-awake. A watchdog thread ends the process regardless, because a stuck AFKLocker
-is worse than an abrupt one.
+`AFKLocker.exe` stays alive for the AFK session and exits when input or an
+unlock ends it. That is not resident in the sense the project promises — nothing
+exists while you are working. Its keep-awake request is process-scoped, so it
+ends with the process however the process ends; the temporary lid values are
+the part that needs the snapshot and sign-in recovery described above.
 
 ## Enabling automatic mode is transactional
 
