@@ -100,6 +100,8 @@ Filename: "{app}\{#SetupExe}"; Description: "Check this machine's power settings
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   SetupPath: String;
+  AppPath: String;
+  LightingHelper: String;
   ResultCode: Integer;
   ShouldRestore: Boolean;
   Cleaned: Boolean;
@@ -131,6 +133,42 @@ begin
              'in Task Manager, under Startup apps.' + #13#10 + #13#10 +
              'The uninstall will continue.',
              mbInformation, MB_OK);
+  end;
+
+  AppPath := ExpandConstant('{app}\{#AppExe}');
+  if FileExists(AppPath) then
+  begin
+    // An AFK session cut short by a crash or restart leaves its temporary lid
+    // values for sign-in recovery. Do that recovery now, then remove the sign-in
+    // entry, which would otherwise point at a deleted program.
+    if not UninstallSilent then
+      Exec(AppPath, '--recover', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\RunOnce', 'AFKLocker recovery');
+
+    // Keyboard lighting lives outside {app}: a helper in Program Files and two
+    // scheduled tasks, all created with administrator approval. Removing them
+    // needs that approval again, so ask for it rather than leave elevated tasks
+    // behind that point at nothing. ShellExec reports no exit code, so success
+    // is judged by whether the helper is gone.
+    LightingHelper := ExpandConstant('{commonpf}\AFKLocker Keyboard Lighting\{#AppExe}');
+    if FileExists(LightingHelper) then
+    begin
+      if not UninstallSilent then
+        ShellExec('runas', AppPath, '--disable-keyboard-lighting', '', SW_HIDE,
+                  ewWaitUntilTerminated, ResultCode);
+
+      if FileExists(LightingHelper) then
+      begin
+        Log('AFKLocker: keyboard lighting helper was not removed');
+        if not UninstallSilent then
+          MsgBox('AFKLocker could not remove its keyboard lighting helper.' + #13#10 + #13#10 +
+                 'Two scheduled tasks named "AFKLocker Keyboard Lighting" and the folder ' +
+                 ExpandConstant('{commonpf}\AFKLocker Keyboard Lighting') + ' may still exist. ' +
+                 'You can delete them as an administrator.' + #13#10 + #13#10 +
+                 'The uninstall will continue.',
+                 mbInformation, MB_OK);
+      end;
+    end;
   end;
 
   if UninstallSilent then

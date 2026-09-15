@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Linq;
+using System.Security.Principal;
 using System.Text;
 using System.Windows.Forms;
 using AFKLocker.Core;
@@ -30,8 +34,8 @@ namespace AFKLocker.Setup
         /// the buttons at the bottom needed scrolling to reach, and the
         /// right-aligned Close ended up colliding with Diagnostics once the
         /// scrollbar took its width. Reading across two columns costs nothing -
-        /// the left side is what this machine is, the right side is what you
-        /// want it to do - and the whole thing fits on screen with no scrolling.
+        /// the left side is how you lock, the right side is what happens while
+        /// you are away - and the whole thing fits on screen with no scrolling.
         /// </summary>
         private const int ColumnWidth = 430;
 
@@ -71,6 +75,19 @@ namespace AFKLocker.Setup
         private readonly Button _hotkeyClear = new Button();
         private readonly Label _hotkeyNote = new Label();
         private readonly Label _hotkeyStatus = new Label();
+
+        private readonly Label _lightingHeader = new Label();
+        private readonly CheckBox _lightingCheck = new CheckBox();
+        private readonly Label _lightingNote = new Label();
+        private readonly Label _lightingStatus = new Label();
+
+        /// <summary>Detected once per window: the hardware does not change while it is open.</summary>
+        private KeyboardLightingDetection _lightingDetection;
+
+        /// <summary>Set by Refresh before layout: the power checks only exist in Automatic mode.</summary>
+        private bool _automaticLayout;
+        private bool _hasBackup;
+        private readonly Font _summaryFont = new Font("Segoe UI", 10F, FontStyle.Bold);
 
         /// <summary>What the form last read from disk, so a change can be told from a redraw.</summary>
         private AutoLockSettings _savedSettings = new AutoLockSettings();
@@ -177,7 +194,7 @@ namespace AFKLocker.Setup
                 Location = new Point(EdgeMargin + 2, 52)
             };
 
-            StyleSectionHeader(_readinessHeader, "CLOSED-LID READINESS");
+            StyleSectionHeader(_readinessHeader, "POWER SETTINGS");
             _planLabel.ForeColor = Color.FromArgb(94, 94, 94);
             _planLabel.AutoSize = true;
 
@@ -192,8 +209,10 @@ namespace AFKLocker.Setup
             _separator.Width = width;
             _separator.Anchor = AnchorStyles.Top | AnchorStyles.Left;
 
-            _summaryLabel.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
+            // Capped to the column: without a width limit this label grew straight
+            // across the gutter and covered the controls in the other column.
             _summaryLabel.AutoSize = true;
+            _summaryLabel.MaximumSize = new Size(width, 0);
 
             _batteryCheck.Text = "Also keep running on battery";
             _batteryCheck.AutoSize = true;
@@ -209,15 +228,15 @@ namespace AFKLocker.Setup
             _manualRadio.AutoSize = true;
             _manualRadio.Checked = true;
             _manualRadio.CheckedChanged += OnModeChanged;
-            StyleNote(_manualNote, width - 20, "Double-click AFKLocker before closing the lid. "
-                                               + "Nothing of AFKLocker stays running.");
+            StyleNote(_manualNote, width - 20, "Double-click AFKLocker when you step away. "
+                                               + "Nothing changes permanently.");
 
             _automaticRadio.Text = "Automatic";
             _automaticRadio.AutoSize = true;
             _automaticRadio.CheckedChanged += OnModeChanged;
             StyleNote(_automaticNote, width - 20,
-                "Lock Windows automatically whenever the laptop lid closes. A small background "
-                + "watcher runs while you are signed in. Opening the lid never unlocks anything.");
+                "Locks Windows whenever the lid closes. A small helper runs while you are signed in, "
+                + "and the power settings on the right stay applied. Opening the lid never unlocks anything.");
 
             // AutoSize with a width cap, like the other notes. A fixed height
             // silently clipped the longer status messages mid-sentence.
@@ -239,14 +258,25 @@ namespace AFKLocker.Setup
             _hotkeyClear.Click += OnHotkeyClearClicked;
 
             StyleNote(_hotkeyNote, width - 20,
-                "Off by default. Click the box and press the keys you want. Windows tells AFKLocker "
-                + "only when that exact combination is pressed - it never sees anything else you type. "
-                + "A small background helper runs while this is on, because something has to be "
-                + "waiting for the key.");
+                "Click the box and press a combination. Windows tells AFKLocker only about that "
+                + "combination, never anything else you type. A small helper waits for it while this is on.");
 
             _hotkeyStatus.AutoSize = true;
             _hotkeyStatus.MaximumSize = new Size(width - 20, 0);
             _hotkeyStatus.ForeColor = Color.FromArgb(94, 94, 94);
+
+            StyleSectionHeader(_lightingHeader, "KEYBOARD LIGHTING");
+
+            _lightingCheck.Text = "Turn off keyboard lighting during AFK";
+            _lightingCheck.AutoSize = true;
+            _lightingCheck.CheckedChanged += OnLightingChanged;
+
+            StyleNote(_lightingNote, width - 20,
+                "The lighting goes dark during AFK and comes back exactly as it was when you return.");
+
+            _lightingStatus.AutoSize = true;
+            _lightingStatus.MaximumSize = new Size(width - 20, 0);
+            _lightingStatus.ForeColor = Color.FromArgb(94, 94, 94);
 
             _applyButton.Text = "Apply configuration";
             _applyButton.Size = new Size(160, 32);
@@ -278,6 +308,7 @@ namespace AFKLocker.Setup
                 _batteryCheck, _batteryNote,
                 _lockHeader, _manualRadio, _manualNote, _automaticRadio, _automaticNote, _watcherStatus,
                 _hotkeyHeader, _hotkeyCheck, _hotkeyBox, _hotkeyClear, _hotkeyNote, _hotkeyStatus,
+                _lightingHeader, _lightingCheck, _lightingNote, _lightingStatus,
                 _applyButton, _restoreButton, _diagnosticsButton, _closeButton
             });
         }
@@ -302,82 +333,126 @@ namespace AFKLocker.Setup
         /// Lays everything out top to bottom. Doing this in code rather than
         /// with fixed coordinates keeps the window correct when a machine
         /// produces an extra check, or a longer message.
+        ///
+        /// Left is how you lock; right is what happens while you are away. The
+        /// readiness checks only exist in Automatic mode: Manual never needs a
+        /// pre-configured power plan, and listing it as "Ready" there only
+        /// suggested a dependency that is not there.
         /// </summary>
         private void PerformVerticalLayout(int checksContentHeight)
         {
             const int MaxChecksHeight = 300;
+            const int SectionGap = 26;
 
             int left = EdgeMargin;
             int right = EdgeMargin + ColumnWidth + ColumnGutter;
-            int top = 88;
+            int top = 92;
+            bool automatic = _automaticLayout;
 
-            // --- left column: what this machine is ---------------------------
+            // --- left column: how you lock ------------------------------------
             int y = top;
 
-            _readinessHeader.Location = new Point(left, y);
-            y = _readinessHeader.Bottom + 8;
-
-            _planLabel.Location = new Point(left, y);
-            y = _planLabel.Bottom + 8;
-
-            _checksPanel.Location = new Point(left, y);
-            _checksPanel.Height = Math.Min(Math.Max(checksContentHeight, 60), MaxChecksHeight);
-            _checksPanel.AutoScroll = checksContentHeight > MaxChecksHeight;
-            y = _checksPanel.Bottom + 10;
-
-            _separator.Location = new Point(left, y);
-            y = _separator.Bottom + 12;
-
-            _summaryLabel.Location = new Point(left, y);
-            y = _summaryLabel.Bottom + 14;
-
-            _batteryCheck.Location = new Point(left + 2, y);
-            y = _batteryCheck.Bottom + 4;
-
-            _batteryNote.Location = new Point(left + 20, y);
-            int leftBottom = _batteryNote.Bottom;
-
-            // --- right column: what you want it to do -------------------------
-            y = top;
-
-            _lockHeader.Location = new Point(right, y);
+            _lockHeader.Location = new Point(left, y);
             y = _lockHeader.Bottom + 10;
 
-            _manualRadio.Location = new Point(right + 2, y);
+            _manualRadio.Location = new Point(left + 2, y);
             y = _manualRadio.Bottom + 2;
-            _manualNote.Location = new Point(right + 20, y);
+            _manualNote.Location = new Point(left + 20, y);
             y = _manualNote.Bottom + 12;
 
-            _automaticRadio.Location = new Point(right + 2, y);
+            _automaticRadio.Location = new Point(left + 2, y);
             y = _automaticRadio.Bottom + 2;
-            _automaticNote.Location = new Point(right + 20, y);
+            _automaticNote.Location = new Point(left + 20, y);
             y = _automaticNote.Bottom + 8;
 
-            _watcherStatus.Location = new Point(right + 20, y);
-            y = _watcherStatus.Bottom + 24;
+            bool watcherLine = _watcherStatus.Text.Length > 0;
+            _watcherStatus.Visible = watcherLine;
+            _watcherStatus.Location = new Point(left + 20, y);
+            y = (watcherLine ? _watcherStatus.Bottom : _automaticNote.Bottom) + SectionGap;
 
-            _hotkeyHeader.Location = new Point(right, y);
+            _hotkeyHeader.Location = new Point(left, y);
             y = _hotkeyHeader.Bottom + 10;
 
-            _hotkeyCheck.Location = new Point(right + 2, y);
+            _hotkeyCheck.Location = new Point(left + 2, y);
             y = _hotkeyCheck.Bottom + 6;
 
-            _hotkeyBox.Location = new Point(right + 20, y);
+            _hotkeyBox.Location = new Point(left + 20, y);
             _hotkeyClear.Location = new Point(_hotkeyBox.Right + 8, y - 1);
             y = _hotkeyBox.Bottom + 6;
 
-            _hotkeyNote.Location = new Point(right + 20, y);
+            _hotkeyNote.Location = new Point(left + 20, y);
             y = _hotkeyNote.Bottom + 6;
 
-            _hotkeyStatus.Location = new Point(right + 20, y);
-            int rightBottom = _hotkeyStatus.Bottom;
+            _hotkeyStatus.Location = new Point(left + 20, y);
+            int leftBottom = _hotkeyStatus.Bottom;
+
+            // --- right column: while you are away -----------------------------
+            y = top;
+
+            _lightingHeader.Location = new Point(right, y);
+            y = _lightingHeader.Bottom + 10;
+
+            _lightingCheck.Location = new Point(right + 2, y);
+            y = _lightingCheck.Bottom + 2;
+
+            _lightingNote.Location = new Point(right + 20, y);
+            y = _lightingNote.Bottom + 6;
+
+            _lightingStatus.Location = new Point(right + 20, y);
+            y = _lightingStatus.Bottom + SectionGap;
+
+            _readinessHeader.Location = new Point(right, y);
+            y = _readinessHeader.Bottom + 8;
+
+            _planLabel.Visible = automatic;
+            _checksPanel.Visible = automatic;
+            _separator.Visible = automatic;
+            _batteryCheck.Visible = automatic;
+            _batteryNote.Visible = automatic;
+
+            if (automatic)
+            {
+                _planLabel.Location = new Point(right, y);
+                y = _planLabel.Bottom + 8;
+
+                _checksPanel.Location = new Point(right, y);
+                _checksPanel.Height = Math.Min(Math.Max(checksContentHeight, 60), MaxChecksHeight);
+                _checksPanel.AutoScroll = checksContentHeight > MaxChecksHeight;
+                y = _checksPanel.Bottom + 10;
+
+                _separator.Location = new Point(right, y);
+                y = _separator.Bottom + 12;
+            }
+
+            _summaryLabel.Location = new Point(right, y);
+            y = _summaryLabel.Bottom;
+
+            if (automatic)
+            {
+                _batteryCheck.Location = new Point(right + 2, y + 14);
+                _batteryNote.Location = new Point(right + 20, _batteryCheck.Bottom + 4);
+                y = _batteryNote.Bottom;
+            }
+            int rightBottom = y;
 
             // --- buttons, under whichever column ran longer -------------------
-            int buttonRow = Math.Max(leftBottom, rightBottom) + 24;
+            // A button that can do nothing in this state is hidden, not greyed
+            // out with a label explaining why.
+            int buttonRow = Math.Max(leftBottom, rightBottom) + 28;
+            _applyButton.Visible = automatic;
+            _restoreButton.Visible = _hasBackup;
 
-            _applyButton.Location = new Point(EdgeMargin, buttonRow);
-            _restoreButton.Location = new Point(_applyButton.Right + 8, buttonRow);
-            _diagnosticsButton.Location = new Point(_restoreButton.Right + 8, buttonRow);
+            var shown = new List<Button>();
+            if (automatic) shown.Add(_applyButton);
+            if (_hasBackup) shown.Add(_restoreButton);
+            shown.Add(_diagnosticsButton);
+
+            int x = EdgeMargin;
+            foreach (Button button in shown)
+            {
+                button.Location = new Point(x, buttonRow);
+                x = button.Right + 8;
+            }
 
             // Right-aligned, but never on top of Diagnostics. The old code
             // trusted ClientSize.Width, which shrinks when a scrollbar appears -
@@ -393,6 +468,17 @@ namespace AFKLocker.Setup
 
         private void Refresh(bool showErrors)
         {
+            // Outside the power read below: a plan that cannot be read must not
+            // also hide the way back to saved values.
+            try
+            {
+                _hasBackup = _backups.ListSchemes().Any();
+            }
+            catch (Exception)
+            {
+                _hasBackup = false;
+            }
+
             try
             {
                 PowerSnapshot snapshot = PowerSnapshot.Read(_power, _info);
@@ -401,12 +487,29 @@ namespace AFKLocker.Setup
                 _planLabel.Text = "Power plan: " + (snapshot.SchemeName ?? snapshot.Scheme.ToString("D"));
                 int contentHeight = RenderChecks(_report);
 
-                _summaryLabel.Text = _report.Summary;
-                _summaryLabel.ForeColor = _report.IsReady
-                    ? Color.FromArgb(16, 124, 16)
-                    : Color.FromArgb(196, 43, 28);
+                AutoLockStatus status = _autoLock.GetStatus();
+                _automaticLayout = status.Mode == LockMode.Automatic;
+
+                if (_automaticLayout)
+                {
+                    _summaryLabel.Text = _report.Summary;
+                    _summaryLabel.Font = _summaryFont;
+                    _summaryLabel.ForeColor = _report.IsReady
+                        ? Color.FromArgb(16, 124, 16)
+                        : Color.FromArgb(196, 43, 28);
+                }
+                else
+                {
+                    _summaryLabel.Text = "Nothing to configure in Manual mode. While AFK is active the PC "
+                                         + "stays awake and closing the lid does nothing; both go back to your "
+                                         + "normal settings when you return. Display and sleep timeouts are "
+                                         + "never changed.";
+                    _summaryLabel.Font = Font;
+                    _summaryLabel.ForeColor = Color.FromArgb(94, 94, 94);
+                }
 
                 RefreshLockBehaviour();
+                RefreshKeyboardLighting();
                 PerformVerticalLayout(contentHeight);
                 UpdateButtons();
             }
@@ -415,9 +518,11 @@ namespace AFKLocker.Setup
                 _report = null;
                 _planLabel.Text = "Power plan: unavailable";
                 _summaryLabel.Text = "Could not read power settings";
+                _summaryLabel.Font = _summaryFont;
                 _summaryLabel.ForeColor = Color.FromArgb(196, 43, 28);
                 _applyButton.Enabled = false;
                 RefreshLockBehaviour();
+                RefreshKeyboardLighting();
                 PerformVerticalLayout(60);
                 if (showErrors)
                     ShowMessage("AFKLocker could not read this machine's power configuration.\r\n\r\n"
@@ -568,9 +673,9 @@ namespace AFKLocker.Setup
 
             if (!status.HelperRequired)
             {
+                // Nothing needs a helper and none is registered: nothing worth a line.
                 if (status.IsConsistent)
-                    return "Helper: not running. Nothing of AFKLocker is resident with manual "
-                           + "locking and the hotkey off.";
+                    return string.Empty;
 
                 // Returning the happy sentence unconditionally hid the one thing
                 // worth saying here: that something is still set to start at
@@ -743,7 +848,7 @@ namespace AFKLocker.Setup
                 ShowMessage("Could not turn on automatic locking.\r\n\r\n" + ex.Message, MessageBoxIcon.Warning);
             }
 
-            RefreshLockBehaviour();
+            Refresh(showErrors: false);
         }
 
         private void DisableAutomatic()
@@ -754,13 +859,18 @@ namespace AFKLocker.Setup
                 if (!result.Success)
                     ShowMessage(DescribeFailure("Automatic locking was switched off, but not cleanly.",
                         result), MessageBoxIcon.Warning);
+                else
+                {
+                    var configurator = new PowerConfigurator(_power, _backups);
+                    if (configurator.HasBackup) configurator.RestoreAll();
+                }
             }
             catch (Exception ex)
             {
                 ShowMessage("Could not turn off automatic locking.\r\n\r\n" + ex.Message, MessageBoxIcon.Warning);
             }
 
-            RefreshLockBehaviour();
+            Refresh(showErrors: false);
         }
 
         /// <summary>
@@ -806,6 +916,16 @@ namespace AFKLocker.Setup
         {
             bool hasBackup = _backups.ListSchemes().Any();
             _restoreButton.Enabled = hasBackup;
+
+            AutoLockStatus lockStatus = _autoLock.GetStatus();
+            bool automatic = lockStatus.Mode == LockMode.Automatic;
+            _batteryCheck.Enabled = automatic;
+
+            if (!automatic)
+            {
+                _applyButton.Enabled = false;
+                return;
+            }
 
             if (_report == null)
             {
@@ -1007,6 +1127,165 @@ namespace AFKLocker.Setup
 
             // A self-test can start and stop the watcher, so re-read the state.
             RefreshLockBehaviour();
+        }
+
+        // ---------------------------------------------------- keyboard lighting ---
+
+        private void RefreshKeyboardLighting()
+        {
+            if (_lightingDetection == null)
+                _lightingDetection = new KeyboardLightingController(
+                    KeyboardLightingHelper.SnapshotPath(KeyboardLightingHelper.Directory)).Detect();
+
+            bool installed = KeyboardLightingHelper.IsInstalled;
+            bool supported = _lightingDetection.Support == KeyboardLightingSupport.Supported;
+
+            _loading = true;
+            _lightingCheck.Checked = installed;
+            _loading = false;
+
+            // Switching off stays possible even when the hardware is no longer
+            // detected - otherwise the helper could never be removed from here.
+            _lightingCheck.Enabled = !_elevated && (installed || supported);
+
+            bool broken = false;
+            string text;
+            if (_elevated)
+            {
+                text = "Unavailable while running as administrator. Open AFKLocker Setup normally to change "
+                       + "this. Whatever is set now keeps working.";
+            }
+            else if (installed)
+            {
+                if (!KeyboardLightingHelper.TasksRegistered(new SchtasksScheduledTasks()))
+                {
+                    text = "On, but incomplete: Windows no longer has its tasks. Switch it off and on again "
+                           + "to repair it.";
+                    broken = true;
+                }
+                else if (!supported)
+                {
+                    text = "On, but this PC no longer reports keyboard lighting AFKLocker can control.";
+                    broken = true;
+                }
+                else
+                {
+                    text = "On. Supported on this PC.";
+                }
+            }
+            else if (supported)
+            {
+                text = "Supported on this PC. Switching it on asks for administrator approval once.";
+            }
+            else if (_lightingDetection.Support == KeyboardLightingSupport.Unsupported)
+            {
+                text = "Not supported on this PC.";
+            }
+            else
+            {
+                text = "Detection failed: " + _lightingDetection.Detail;
+            }
+
+            _lightingStatus.Text = text;
+            _lightingStatus.ForeColor = broken
+                ? Color.FromArgb(196, 43, 28)
+                : Color.FromArgb(94, 94, 94);
+        }
+
+        private void OnLightingChanged(object sender, EventArgs e)
+        {
+            if (_loading) return;
+            bool enable = _lightingCheck.Checked;
+
+            if (enable && MessageBox.Show(this,
+                    "Turn off keyboard lighting during AFK?\r\n\r\n"
+                    + "This PC's keyboard lighting controller only accepts requests from administrators, so "
+                    + "Windows asks for approval once. AFKLocker then installs a small helper in Program Files "
+                    + "and two on-demand tasks that can only turn the lighting off and restore it. Nothing "
+                    + "runs in the background.\r\n\r\n"
+                    + "To prove it works, the keyboard lighting switches off for a moment and comes back.",
+                    "AFKLocker Setup", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+            {
+                RefreshKeyboardLighting();
+                return;
+            }
+
+            if (!enable)
+            {
+                RunLightingHelper("--disable-keyboard-lighting");
+                Refresh(showErrors: false);
+                return;
+            }
+
+            string sid;
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                // The account that asked, passed explicitly: the one approving the
+                // prompt may be a different administrator.
+                sid = identity.User.Value;
+            }
+
+            if (RunLightingHelper("--enable-keyboard-lighting " + sid) == 0)
+            {
+                // From this unelevated process on purpose: a standard user starting
+                // the elevated tasks is what every AFK session does, so that is
+                // what has to be proven. The lighting goes off and comes back once.
+                Cursor = Cursors.WaitCursor;
+                try
+                {
+                    using (var test = new ElevatedKeyboardLightingSession())
+                    {
+                        test.Enter();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Cursor = Cursors.Default;
+                    ShowMessage("Keyboard lighting was set up, but its test failed, so it is being removed "
+                                + "again. Windows asks for approval once more.\r\n\r\n" + ex.Message,
+                        MessageBoxIcon.Warning);
+                    RunLightingHelper("--disable-keyboard-lighting");
+                }
+                finally
+                {
+                    Cursor = Cursors.Default;
+                }
+            }
+
+            Refresh(showErrors: false);
+        }
+
+        /// <summary>
+        /// Runs AFKLocker.exe elevated and returns its exit code, or -1 when it did
+        /// not run. The elevated process explains its own failures.
+        /// </summary>
+        private int RunLightingHelper(string arguments)
+        {
+            try
+            {
+                using (Process process = Process.Start(new ProcessStartInfo
+                {
+                    FileName = Path.Combine(Application.StartupPath, "AFKLocker.exe"),
+                    Arguments = arguments,
+                    UseShellExecute = true,
+                    Verb = "runas"
+                }))
+                {
+                    process.WaitForExit();
+                    return process.ExitCode;
+                }
+            }
+            catch (Win32Exception ex)
+            {
+                // 1223: the approval prompt was declined. Nothing changed.
+                if (ex.NativeErrorCode != 1223)
+                    ShowMessage("Keyboard lighting could not be changed.\r\n\r\n" + ex.Message, MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                ShowMessage("Keyboard lighting could not be changed.\r\n\r\n" + ex.Message, MessageBoxIcon.Warning);
+            }
+            return -1;
         }
 
         private DiagnosticReport RunSelfTest(SelfTestOptions options)

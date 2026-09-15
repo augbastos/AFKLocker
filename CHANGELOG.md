@@ -3,6 +3,41 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- Manual AFK is now a bounded session instead of a permanent power-plan rewrite. It temporarily
+  changes only both lid-close actions, holds a process-scoped keep-awake request, and restores the
+  exact values on keyboard/mouse input or unlock. The original values are saved first, so a killed
+  process cannot lose them. Legacy manual-mode backups are restored once.
+- The display guard now rejects every external-monitor relight while the lid is closed, with an
+  immediate asynchronous display-power request and a fast five-second retry burst after topology
+  changes. There is no twelve-hour expiry or ninety-second input pause.
+- Opening the lid wakes all displays without ending AFK mode. Closing it again returns to the dark
+  state; keyboard or mouse input ends AFK mode. The initial lid-state notification is treated as
+  synchronization so it cannot undo the first display-off request.
+- An AFK session cut short by a killed process or an overnight restart no longer leaves the lid
+  set to "Do nothing" until the next AFK session. A one-shot sign-in entry restores it.
+
+### Added
+
+- **Turn off keyboard lighting during AFK** (Setup, off by default). Support is detected
+  automatically and shown as Supported, Unsupported or Detection failed; hardware details stay out
+  of the UI. Lighting is captured and saved before it is turned off, and restored on exit, or at
+  the next sign-in after a crash. The first backend covers Acer gaming laptops through their
+  firmware WMI interface, which needs one administrator approval when the option is switched on;
+  the elevated part runs from a protected copy under Program Files, never from the per-user
+  install.
+
+### Changed
+
+- Setup is reorganised around what you are choosing: how you lock (mode, hotkey) on the left, what
+  happens while you are away (keyboard lighting, power settings) on the right. The power readiness
+  checks and the Apply button appear only in Automatic mode, which is the only mode that needs
+  them, and Restore previous appears only when there is something to restore. The power summary no
+  longer runs across into the other column and covers the hotkey controls.
+
 ## [0.5.3] - 2026-09-07
 
 ### Fixed

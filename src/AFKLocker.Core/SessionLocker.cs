@@ -51,6 +51,9 @@ namespace AFKLocker.Core
     public interface IDisplayController
     {
         void TurnOff();
+
+        /// <summary>Wakes every attached display without synthesizing user input.</summary>
+        void TurnOn();
     }
 
     /// <inheritdoc cref="IDisplayController"/>
@@ -59,33 +62,43 @@ namespace AFKLocker.Core
         private static readonly IntPtr HWND_BROADCAST = new IntPtr(0xFFFF);
         private const int WM_SYSCOMMAND = 0x0112;
         private const int SC_MONITORPOWER = 0xF170;
+        private const int MONITOR_ON = -1;
         private const int MONITOR_OFF = 2;
 
-        private const uint SMTO_ABORTIFHUNG = 0x0002;
-        private const int BroadcastTimeoutMilliseconds = 2000;
-
         [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-        private static extern IntPtr SendMessageTimeout(IntPtr hWnd, int msg, IntPtr wParam,
-            IntPtr lParam, uint flags, uint timeoutMilliseconds, out IntPtr result);
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
         /// <summary>
         /// Asks every top-level window's default handler to put the monitors
         /// into standby, which is what actually powers a panel down rather than
         /// painting it black.
         ///
-        /// Deliberately SendMessageTimeout rather than SendMessage. A broadcast
-        /// with SendMessage is synchronous against every top-level window on the
-        /// desktop, so one application that has stopped pumping messages blocks
-        /// this call - and therefore the whole lock-and-darken sequence - with no
-        /// timeout at all. That failure gets likelier the longer a machine has
-        /// been running, which is exactly the shape of "it worked this morning
-        /// and not tonight". SMTO_ABORTIFHUNG steps over those windows instead.
+        /// Deliberately PostMessage rather than SendMessage. A synchronous
+        /// broadcast waits on every top-level window and was measured blocking
+        /// for almost ten seconds on the target machine. AFK mode has to answer
+        /// an external-monitor relight immediately, so the request is queued to
+        /// every window and this thread stays free for the next lid/display event.
         /// </summary>
         public void TurnOff()
         {
-            IntPtr result;
-            SendMessageTimeout(HWND_BROADCAST, WM_SYSCOMMAND, new IntPtr(SC_MONITORPOWER),
-                new IntPtr(MONITOR_OFF), SMTO_ABORTIFHUNG, BroadcastTimeoutMilliseconds, out result);
+            SendPowerCommand(MONITOR_OFF);
+        }
+
+        public void TurnOn()
+        {
+            SendPowerCommand(MONITOR_ON);
+        }
+
+        private static void SendPowerCommand(int state)
+        {
+            if (!PostMessage(HWND_BROADCAST, WM_SYSCOMMAND, new IntPtr(SC_MONITORPOWER),
+                    new IntPtr(state)))
+            {
+                int error = Marshal.GetLastWin32Error();
+                throw new Win32Exception(error,
+                    "Windows refused the display power request: " + new Win32Exception(error).Message);
+            }
         }
     }
 }

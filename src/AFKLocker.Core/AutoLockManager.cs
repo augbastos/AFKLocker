@@ -32,7 +32,9 @@ namespace AFKLocker.Core
     public sealed class RunKeyAutostartRegistry : IAutostartRegistry
     {
         private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        private const string RunOnceKeyPath = @"Software\Microsoft\Windows\CurrentVersion\RunOnce";
 
+        private readonly string _keyPath;
         private readonly string _valueName;
 
         public RunKeyAutostartRegistry()
@@ -41,9 +43,21 @@ namespace AFKLocker.Core
         }
 
         public RunKeyAutostartRegistry(string valueName)
+            : this(RunKeyPath, valueName)
+        {
+        }
+
+        private RunKeyAutostartRegistry(string keyPath, string valueName)
         {
             if (string.IsNullOrEmpty(valueName)) throw new ArgumentException("valueName must not be empty", "valueName");
+            _keyPath = keyPath;
             _valueName = valueName;
+        }
+
+        /// <summary>The same entry under RunOnce: Windows runs it at the next sign-in and deletes it.</summary>
+        public static RunKeyAutostartRegistry RunOnce(string valueName)
+        {
+            return new RunKeyAutostartRegistry(RunOnceKeyPath, valueName);
         }
 
         public bool IsRegistered
@@ -55,7 +69,7 @@ namespace AFKLocker.Core
         {
             get
             {
-                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RunKeyPath, false))
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(_keyPath, false))
                 {
                     if (key == null) return null;
                     return key.GetValue(_valueName) as string;
@@ -66,7 +80,7 @@ namespace AFKLocker.Core
         public void Register(string command)
         {
             if (string.IsNullOrEmpty(command)) throw new ArgumentException("command must not be empty", "command");
-            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RunKeyPath))
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(_keyPath))
             {
                 if (key == null)
                     throw new InvalidOperationException("Could not open the Windows startup registry key.");
@@ -76,7 +90,7 @@ namespace AFKLocker.Core
 
         public void Unregister()
         {
-            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RunKeyPath, true))
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(_keyPath, true))
             {
                 if (key == null) return;
                 if (key.GetValue(_valueName) != null)
