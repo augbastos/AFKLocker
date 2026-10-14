@@ -31,7 +31,7 @@ namespace AFKLocker.Tests
                 Is64BitProcess = true,
                 ClrVersion = ".NET Framework CLR 4.0.30319.42000",
                 IsElevated = false,
-                InstallLocation = @"C:\Users\marta\AppData\Local\Programs\AFKLocker\",
+                InstallLocation = Path.Combine(TestRedactor.ProfilePath, "AppData", "Local", "Programs", "AFKLocker") + @"\",
                 DeviceModel = "CONTOSO ThinkPad X1"
             };
         }
@@ -41,14 +41,18 @@ namespace AFKLocker.Tests
     internal static class TestRedactor
     {
         public const string UserName = "marta";
+        public static string ProfilePath
+        {
+            get { return Path.Combine(@"C:\", "Users", UserName); }
+        }
 
         public static PathRedactor Create()
         {
             var folders = new List<KeyValuePair<string, string>>
             {
-                new KeyValuePair<string, string>(@"C:\Users\marta\AppData\Local", "%LOCALAPPDATA%"),
-                new KeyValuePair<string, string>(@"C:\Users\marta\AppData\Roaming", "%APPDATA%"),
-                new KeyValuePair<string, string>(@"C:\Users\marta", "%USERPROFILE%"),
+                new KeyValuePair<string, string>(Path.Combine(ProfilePath, "AppData", "Local"), "%LOCALAPPDATA%"),
+                new KeyValuePair<string, string>(Path.Combine(ProfilePath, "AppData", "Roaming"), "%APPDATA%"),
+                new KeyValuePair<string, string>(ProfilePath, "%USERPROFILE%"),
                 new KeyValuePair<string, string>(@"C:\Program Files", "%PROGRAMFILES%"),
                 new KeyValuePair<string, string>(@"C:\Windows", "%WINDIR%")
             };
@@ -64,10 +68,10 @@ namespace AFKLocker.Tests
             PathRedactor redactor = TestRedactor.Create();
 
             Assert.Equal(@"%LOCALAPPDATA%\AFKLocker\settings.txt",
-                redactor.Redact(@"C:\Users\marta\AppData\Local\AFKLocker\settings.txt"),
+                redactor.Redact(Path.Combine(TestRedactor.ProfilePath, "AppData", "Local", "AFKLocker", "settings.txt")),
                 "local app data wins over the profile folder");
             Assert.Equal(@"%USERPROFILE%\Desktop",
-                redactor.Redact(@"C:\Users\marta\Desktop"), "profile folder");
+                redactor.Redact(Path.Combine(TestRedactor.ProfilePath, "Desktop")), "profile folder");
             Assert.Equal(@"%PROGRAMFILES%\AFKLocker",
                 redactor.Redact(@"C:\Program Files\AFKLocker"), "program files");
         }
@@ -124,7 +128,7 @@ namespace AFKLocker.Tests
             PathRedactor redactor = TestRedactor.Create();
 
             Assert.Equal(@"%LOCALAPPDATA%\Programs\AFKLocker\AFKLockerWatcher.exe",
-                redactor.RedactPath(@"C:\Users\marta\AppData\Local\Programs\AFKLocker\AFKLockerWatcher.exe"),
+                redactor.RedactPath(Path.Combine(TestRedactor.ProfilePath, "AppData", "Local", "Programs", "AFKLocker", "AFKLockerWatcher.exe")),
                 "still readable, still anonymous");
         }
 
@@ -368,7 +372,7 @@ namespace AFKLocker.Tests
             power.MissingSettings.Add(PowerSettings.HibernateDc.Key);
 
             var autostart = new FakeAutostartRegistry();
-            autostart.Preset("\"C:\\Users\\marta\\AppData\\Local\\Programs\\AFKLocker\\AFKLockerWatcher.exe\"");
+            autostart.Preset("\"" + Path.Combine(TestRedactor.ProfilePath, "AppData", "Local", "Programs", "AFKLocker", "AFKLockerWatcher.exe") + "\"");
 
             var selfTest = new SelfTest(power, new FakePowerInformation(), new InMemoryBackupStore(),
                 new FakeSettingsStore(), autostart, new FakeWatcherProcess(),
