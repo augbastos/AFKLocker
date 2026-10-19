@@ -89,7 +89,7 @@ username, computer name, network addresses and files.
 
 - Windows 10 (1903+) and 11, x64, with .NET Framework 4.8 (already part of both).
 - Not code-signed (see above).
-- Physically tested on one machine; everything else is covered by simulated tests.
+- Physically tested on Windows; everything else is covered by simulated tests.
 - On Modern Standby laptops closed-lid behaviour is up to the firmware, and vendor power utilities
   or Group Policy can override settings. Setup tells you what Windows reports.
 - Automatic mode needs a laptop that reports lid events. Setup says so if yours does not.
