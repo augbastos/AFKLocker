@@ -470,7 +470,7 @@ Initial release.
 
 - Modern Standby (S0 low power idle) machines may still enter a low power state with the lid
   closed. AFKLocker detects this and says so rather than promising otherwise.
-- Physically tested on one machine only. Everything else is covered by tests against simulated
+- Physically tested on Windows. Everything else is covered by tests against simulated
   machines.
 - Binaries are not code-signed, so SmartScreen will warn on first run.
 
