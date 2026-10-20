@@ -28,7 +28,8 @@ A small Windows utility that keeps your laptop working while you are away.
    [Releases](https://github.com/augbastos/AFKLocker/releases/latest).
 2. When you step away, double-click **AFKLocker** on your desktop. The PC locks and the screens go
    dark.
-3. Close the lid if you like. Builds, downloads and agents keep running.
+3. Close the lid if you like. Builds, downloads and agents keep running (closed-lid behaviour
+   depends on your firmware and power policy; see [Limitations](#limitations)).
 4. When you are back, touch the keyboard or mouse and sign in as usual.
 
 > **SmartScreen warns on first run** because the binaries are not code-signed. Choose
