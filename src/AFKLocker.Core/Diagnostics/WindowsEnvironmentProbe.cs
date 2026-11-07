@@ -64,18 +64,9 @@ namespace AFKLocker.Core.Diagnostics
 
         public bool IsElevated
         {
-            get
-            {
-                try
-                {
-                    using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
-                        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
-                }
-                catch (Exception)
-                {
-                    return false;
-                }
-            }
+            // The same "elevated" the rest of the program uses, so the report
+            // cannot disagree with how the helper is started.
+            get { return WatcherController.CurrentProcessIsElevated(); }
         }
 
         public string InstallLocation

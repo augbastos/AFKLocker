@@ -242,12 +242,13 @@ namespace AFKLocker.Core
             {
                 try
                 {
-                    bool createdNew;
-                    // Opening the mutex is enough: if we created it, nobody held it.
-                    using (new Mutex(false, RunningMutexName, out createdNew))
-                    {
-                        return !createdNew;
-                    }
+                    // Open only, never create: creating the helper's own lock for a
+                    // moment could make a helper starting right now think it is
+                    // already running and exit.
+                    Mutex running;
+                    if (!Mutex.TryOpenExisting(RunningMutexName, out running)) return false;
+                    running.Dispose();
+                    return true;
                 }
                 catch (UnauthorizedAccessException)
                 {

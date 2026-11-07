@@ -240,7 +240,9 @@ namespace AFKLocker.Core
                 }
             }
 
-            if (wrote)
+            // Re-activate only when this is still the active plan; otherwise
+            // activating it would switch the user's plan back.
+            if (wrote && snapshot.Scheme == _power.GetActiveScheme())
             {
                 try
                 {

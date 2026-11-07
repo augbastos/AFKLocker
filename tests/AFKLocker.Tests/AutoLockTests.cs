@@ -252,7 +252,7 @@ namespace AFKLocker.Tests
         private static void NoLidIsWarned()
         {
             PowerSnapshot snapshot = SnapshotBuilder.ReadyLaptop();
-            snapshot.Capabilities.LidPresent = false;
+            snapshot[PowerSettings.LidCloseAc] = SettingValue.Absent;
 
             AutoLockWarning warning = AutoLockAdvisor.Evaluate(LockMode.Automatic, snapshot);
 
@@ -265,7 +265,7 @@ namespace AFKLocker.Tests
         private static void NoLidTakesPriority()
         {
             PowerSnapshot snapshot = SnapshotBuilder.ReadyLaptop();   // battery sleeps after 30 min
-            snapshot.Capabilities.LidPresent = false;
+            snapshot[PowerSettings.LidCloseAc] = SettingValue.Absent;
 
             Assert.Equal(AutoLockWarning.NoLidReported,
                 AutoLockAdvisor.Evaluate(LockMode.Automatic, snapshot),

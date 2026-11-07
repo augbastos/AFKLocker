@@ -217,11 +217,6 @@ namespace AFKLocker.Core
             }
         }
 
-        public string Directory
-        {
-            get { return _directory; }
-        }
-
         private string PathFor(Guid scheme)
         {
             return Path.Combine(_directory, FilePrefix + scheme.ToString("D") + FileSuffix);

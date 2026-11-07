@@ -203,12 +203,6 @@ namespace AFKLocker.Core
             get { return WatcherState == WatcherState.Ready; }
         }
 
-        /// <summary>Kept for callers that only want the yes/no.</summary>
-        public bool AutostartRegistered
-        {
-            get { return Autostart != AutostartState.Absent && Autostart != AutostartState.ReadFailed; }
-        }
-
         /// <summary>
         /// What the helper has to be doing, derived from the features switched
         /// on rather than from the lock mode.
@@ -217,12 +211,14 @@ namespace AFKLocker.Core
         {
             get
             {
-                HelperFeatures features = HelperFeatures.None;
-                if (Mode == LockMode.Automatic) features |= HelperFeatures.LidLock;
-                if (HotkeyEnabled && Hotkey != null && Hotkey.IsUsable)
-                    features |= HelperFeatures.GlobalHotkey;
-                if (TrayIconEnabled) features |= HelperFeatures.TrayIcon;
-                return features;
+                // The one rule lives in AutoLockSettings; ask it, never copy it.
+                return new AutoLockSettings
+                {
+                    Mode = Mode,
+                    HotkeyEnabled = HotkeyEnabled,
+                    Hotkey = Hotkey,
+                    TrayIconEnabled = TrayIconEnabled
+                }.RequiredFeatures;
             }
         }
 

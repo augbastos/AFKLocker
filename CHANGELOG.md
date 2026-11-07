@@ -10,6 +10,21 @@ This project follows [Semantic Versioning](https://semver.org/).
 - **Tray icon** (Setup, off by default): an icon next to the clock that locks with one left click,
   shown by the small helper.
 
+### Fixed
+
+- The hotkey and the double-click now lock the PC even when Windows refuses the temporary power change.
+- Automatic mode (lid close) now respects "Also keep running on battery": with the box off, the
+  laptop locks and then sleeps on battery as promised.
+- Restore previous no longer switches your active power plan back to an older one.
+- A failed one-time cleanup of old 0.5.x settings no longer stops the double-click from locking.
+- Setup and diagnostics no longer say "closing the lid will not lock" on laptops that do report a
+  lid close setting.
+- The diagnostics zip no longer keeps folder names below your user folder (for example client or
+  company folders).
+- A hung Task Scheduler call during keyboard lighting setup now times out after 10 seconds.
+- Checking whether the helper is running no longer risks stopping a helper that is starting.
+- A short user name is only removed from diagnostics as a whole word, not from inside other words.
+
 ## [0.6.0] - 2026-09-15
 
 ### Fixed

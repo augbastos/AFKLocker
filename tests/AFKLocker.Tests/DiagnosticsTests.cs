@@ -111,6 +111,28 @@ namespace AFKLocker.Tests
             Assert.False(result.Contains("Silva"), "no folder names leak");
         }
 
+        [Test("Folders below a known folder are reduced too, except AFKLocker's own install")]
+        private static void FoldersUnderKnownFoldersAreReduced()
+        {
+            PathRedactor redactor = TestRedactor.Create();
+
+            string result = redactor.RedactPath(Path.Combine(TestRedactor.ProfilePath,
+                "OneDrive - Fabrikam Ltd", "Clients", "Oliveira", "AFKLocker", "AFKLockerWatcher.exe"));
+
+            Assert.Equal(@"%USERPROFILE%\<path>\AFKLockerWatcher.exe", result,
+                "token and file name survive, the folders in between do not");
+            Assert.False(result.Contains("Oliveira") || result.Contains("Fabrikam"), "no folder names leak");
+        }
+
+        [Test("A user name is removed as a whole word only, not from inside other words")]
+        private static void UserNameIsMatchedAsAWholeWord()
+        {
+            var redactor = new PathRedactor("ed", new List<KeyValuePair<string, string>>());
+
+            Assert.Equal("being used by <user>", redactor.Redact("being used by ED"),
+                "the name goes, the word that contains it stays");
+        }
+
         [Test("A UNC path is reduced too")]
         private static void UncPathsAreReduced()
         {

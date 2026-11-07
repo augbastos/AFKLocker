@@ -169,6 +169,7 @@ namespace AFKLocker.Tests
                 "the scheme AFKLocker changed is the one restored");
             Assert.Equal((uint)LidAction.Shutdown, power.GetForScheme(otherScheme, PowerSettings.LidCloseAc),
                 "the plan the user switched to is left alone");
+            Assert.Equal(otherScheme, power.GetActiveScheme(), "the active plan is not switched back");
         }
 
         [Test("Access denied surfaces as an access denied error, not a generic failure")]
