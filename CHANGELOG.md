@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.7.0] - 2026-11-07
 
 ### Added
 
@@ -496,6 +496,7 @@ Initial release.
   machines.
 - Binaries are not code-signed, so SmartScreen will warn on first run.
 
+[0.7.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.7.0
 [0.6.0]: https://github.com/augbastos/AFKLocker/releases/tag/v0.6.0
 [0.5.3]: https://github.com/augbastos/AFKLocker/releases/tag/v0.5.3
 [0.5.2]: https://github.com/augbastos/AFKLocker/releases/tag/v0.5.2
