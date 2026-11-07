@@ -24,16 +24,6 @@ namespace AFKLocker.Core
         /// <summary>True when the machine reports at least one battery.</summary>
         public bool BatteryPresent { get; set; }
 
-        public static SystemCapabilities Read()
-        {
-            return Read(new WindowsPowerInformation());
-        }
-
-        public static SystemCapabilities Read(IPowerInformation powerInformation)
-        {
-            if (powerInformation == null) throw new ArgumentNullException("powerInformation");
-            return powerInformation.GetCapabilities();
-        }
     }
 
     /// <summary>Abstraction over the system power capability query, for testing.</summary>

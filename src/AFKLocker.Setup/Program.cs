@@ -15,18 +15,7 @@ namespace AFKLocker.Setup
 
         public static bool IsElevated
         {
-            get
-            {
-                try
-                {
-                    using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
-                        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
-                }
-                catch
-                {
-                    return false;
-                }
-            }
+            get { return KeyboardLightingHelper.IsAdministrator; }
         }
 
         public static bool RelaunchElevated(bool includeBattery)

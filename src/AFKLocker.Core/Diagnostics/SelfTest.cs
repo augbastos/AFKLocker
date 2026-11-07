@@ -353,6 +353,7 @@ namespace AFKLocker.Core.Diagnostics
                 Mode = mode,
                 HotkeyEnabled = settings.HotkeyEnabled,
                 Hotkey = settings.Hotkey,
+                TrayIconEnabled = settings.TrayIconEnabled,
                 Autostart = autostart.State,
                 AutostartProblem = autostart.Problem,
                 WatcherState = state,

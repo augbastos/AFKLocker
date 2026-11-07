@@ -41,7 +41,10 @@ namespace AFKLocker.Core
         LidLock = 1,
 
         /// <summary>Lock when the registered key combination is pressed.</summary>
-        GlobalHotkey = 2
+        GlobalHotkey = 2,
+
+        /// <summary>Show the notification-area icon whose click locks.</summary>
+        TrayIcon = 4
     }
 
     public sealed class LidStateEventArgs : EventArgs
@@ -136,8 +139,9 @@ namespace AFKLocker.Core
             if (mode != LockMode.Automatic || snapshot == null)
                 return AutoLockWarning.None;
 
-            SystemCapabilities caps = snapshot.Capabilities;
-            if (caps != null && !caps.LidPresent)
+            // Keyed off the lid setting, like readiness: some firmware reports
+            // LidPresent = false on machines that do have a lid.
+            if (!snapshot[PowerSettings.LidCloseAc].IsPresent)
                 return AutoLockWarning.NoLidReported;
 
             SettingValue lid = snapshot[PowerSettings.LidCloseDc];
@@ -192,9 +196,6 @@ namespace AFKLocker.Core
             _session = session;
         }
 
-        /// <summary>Number of times this policy has locked the session.</summary>
-        public int LockCount { get; private set; }
-
         public AutoLockDecision Handle(LidState state)
         {
             // Windows delivers the current lid position as soon as the watcher
@@ -226,7 +227,6 @@ namespace AFKLocker.Core
                 return AutoLockDecision.IgnoredSessionAlreadyLocked;
 
             _locker.Lock();
-            LockCount++;
             return AutoLockDecision.Locked;
         }
 

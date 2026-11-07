@@ -100,18 +100,29 @@ namespace AFKLocker.App
         private static int LockSession()
         {
             AfkSession session;
+            string legacyRestoreError = null;
             try
             {
-                RestoreLegacyPersistentConfiguration();
+                // A failed one-time cleanup must not stop the lock: say so
+                // after the session ends instead.
+                try
+                {
+                    RestoreLegacyPersistentConfiguration();
+                }
+                catch (Exception ex)
+                {
+                    legacyRestoreError = ex.Message;
+                }
 
                 var power = new WindowsPowerConfiguration();
-                session = LockAction.EnterAfkMode(
+                session = AfkSession.Start(
                     new WindowsSessionLocker(),
                     new WindowsDisplayController(),
                     new WindowsUserInputMonitor(),
                     new TemporaryPowerMode(power, new WindowsExecutionStateController()),
                     KeyboardLightingSessionFactory.Create(),
-                    AfkRecovery.ForExecutable(Application.ExecutablePath));
+                    AfkRecovery.ForExecutable(Application.ExecutablePath),
+                    true);
             }
             catch (Exception ex)
             {
@@ -120,6 +131,10 @@ namespace AFKLocker.App
             }
 
             RunAfkSession(session);
+
+            if (legacyRestoreError != null)
+                ShowError("AFKLocker locked, but the old permanent power configuration could not be restored.\r\n\r\n"
+                          + legacyRestoreError);
 
             if (!string.IsNullOrEmpty(session.RestoreError))
                 ShowError("AFK mode ended, but the temporary lid settings could not be fully restored. "

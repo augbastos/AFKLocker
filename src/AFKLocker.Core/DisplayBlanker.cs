@@ -188,7 +188,6 @@ namespace AFKLocker.Core
         private bool _stateKnown;
         private bool _sessionLocked = true;
         private bool _running;
-        private bool _finished;
         private bool _disposed;
 
         public DisplayBlanker(IDisplayController displays, IUserInputMonitor input)
@@ -201,16 +200,6 @@ namespace AFKLocker.Core
 
         public event EventHandler Finished;
 
-        public bool HasFinished
-        {
-            get { return _finished; }
-        }
-
-        public string StopReason
-        {
-            get { return _policy == null ? null : _policy.StopReason; }
-        }
-
         public bool Start()
         {
             if (_running) return true;
@@ -218,7 +207,6 @@ namespace AFKLocker.Core
             _policy = new DisplayBlankPolicy(SafeLastInput());
             _startedUtc = DateTime.UtcNow;
             _running = true;
-            _finished = false;
             _stateKnown = false;
 
             _window = new NotificationWindow(this);
@@ -357,7 +345,6 @@ namespace AFKLocker.Core
         {
             if (!_running) return;
             _running = false;
-            _finished = true;
             DisposeTimer(ref _poll);
             DisposeTimer(ref _burst);
 

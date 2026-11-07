@@ -409,7 +409,9 @@ namespace AFKLocker.Core
                 }
             }
 
-            if (restored > 0)
+            // Only the active plan needs re-activating to pick up the written
+            // values; activating an inactive one would switch the user's plan.
+            if (restored > 0 && backup.Scheme == _power.GetActiveScheme())
                 _power.ApplyScheme(backup.Scheme);
 
             _backups.Delete(scheme);

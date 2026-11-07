@@ -73,8 +73,12 @@ namespace AFKLocker.Core.Diagnostics
 
             // Belt and braces: a user name can still appear in a path shape the
             // known folders did not cover, or in a message.
+            // Whole words only: a short name such as "ed" must not be cut out
+            // of "used", which would point at the name by the holes it leaves.
             if (!string.IsNullOrEmpty(_userName))
-                result = Replace(result, _userName, "<user>");
+                result = Regex.Replace(result,
+                    "(?<![A-Za-z0-9])" + Regex.Escape(_userName) + "(?![A-Za-z0-9])",
+                    "<user>", RegexOptions.IgnoreCase);
 
             return result;
         }
@@ -99,13 +103,37 @@ namespace AFKLocker.Core.Diagnostics
             // A drive letter or UNC prefix that survived means the path was not
             // under any known folder.
             bool stillAbsolute = Regex.IsMatch(redacted, @"^[a-zA-Z]:\\") || redacted.StartsWith(@"\\");
-            if (!stillAbsolute) return redacted;
+            if (!stillAbsolute)
+                return IsOwnInstallPlace(redacted) ? redacted : ReduceUnderToken(redacted);
 
             string leaf = redacted.TrimEnd('\\');
             int separator = leaf.LastIndexOf('\\');
             string name = separator >= 0 ? leaf.Substring(separator + 1) : leaf;
 
             return string.IsNullOrEmpty(name) ? "<path>" : @"<path>\" + name;
+        }
+
+        /// <summary>AFKLocker's own install folders, whose subfolders are ours.</summary>
+        private static bool IsOwnInstallPlace(string redacted)
+        {
+            return Regex.IsMatch(redacted,
+                @"^(%LOCALAPPDATA%\\Programs\\AFKLocker|%PROGRAMFILES%\\AFKLocker)(\\|$)",
+                RegexOptions.IgnoreCase);
+        }
+
+        /// <summary>
+        /// Inside a known folder the folders below it can still name a person or
+        /// a client, so keep only the token and the file name.
+        /// </summary>
+        private static string ReduceUnderToken(string redacted)
+        {
+            if (!redacted.StartsWith("%")) return redacted;
+
+            int first = redacted.IndexOf('\\');
+            int last = redacted.LastIndexOf('\\');
+            if (first == last) return redacted;
+
+            return redacted.Substring(0, first) + @"\<path>" + redacted.Substring(last);
         }
 
         private static string Replace(string text, string find, string replaceWith)

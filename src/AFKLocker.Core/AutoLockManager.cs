@@ -181,6 +181,8 @@ namespace AFKLocker.Core
         /// <summary>The chosen combination. Never null in practice; empty means none.</summary>
         public HotkeyBinding Hotkey { get; set; }
 
+        public bool TrayIconEnabled { get; set; }
+
         /// <summary>What the sign-in entry is, not merely whether one exists.</summary>
         public AutostartState Autostart { get; set; }
 
@@ -201,12 +203,6 @@ namespace AFKLocker.Core
             get { return WatcherState == WatcherState.Ready; }
         }
 
-        /// <summary>Kept for callers that only want the yes/no.</summary>
-        public bool AutostartRegistered
-        {
-            get { return Autostart != AutostartState.Absent && Autostart != AutostartState.ReadFailed; }
-        }
-
         /// <summary>
         /// What the helper has to be doing, derived from the features switched
         /// on rather than from the lock mode.
@@ -215,11 +211,14 @@ namespace AFKLocker.Core
         {
             get
             {
-                HelperFeatures features = HelperFeatures.None;
-                if (Mode == LockMode.Automatic) features |= HelperFeatures.LidLock;
-                if (HotkeyEnabled && Hotkey != null && Hotkey.IsUsable)
-                    features |= HelperFeatures.GlobalHotkey;
-                return features;
+                // The one rule lives in AutoLockSettings; ask it, never copy it.
+                return new AutoLockSettings
+                {
+                    Mode = Mode,
+                    HotkeyEnabled = HotkeyEnabled,
+                    Hotkey = Hotkey,
+                    TrayIconEnabled = TrayIconEnabled
+                }.RequiredFeatures;
             }
         }
 
@@ -237,11 +236,13 @@ namespace AFKLocker.Core
                 HelperFeatures features = RequiredFeatures;
                 bool lid = (features & HelperFeatures.LidLock) != 0;
                 bool hotkey = (features & HelperFeatures.GlobalHotkey) != 0;
+                bool tray = (features & HelperFeatures.TrayIcon) != 0;
 
-                if (lid && hotkey) return "lid close and the global hotkey";
-                if (lid) return "lid close";
-                if (hotkey) return "the global hotkey";
-                return null;
+                var parts = new List<string>();
+                if (lid) parts.Add("lid close");
+                if (hotkey) parts.Add("the global hotkey");
+                if (tray) parts.Add("the tray icon");
+                return parts.Count == 0 ? null : string.Join(" and ", parts);
             }
         }
 
@@ -387,6 +388,7 @@ namespace AFKLocker.Core
                 Mode = settings.Mode,
                 HotkeyEnabled = settings.HotkeyEnabled,
                 Hotkey = settings.Hotkey ?? HotkeyBinding.Empty,
+                TrayIconEnabled = settings.TrayIconEnabled,
                 Autostart = autostart.State,
                 AutostartProblem = autostart.Problem,
                 WatcherState = _watcher.GetState(),
@@ -598,6 +600,14 @@ namespace AFKLocker.Core
             AutoLockSettings desired = GetSettings();
             desired.HotkeyEnabled = enabled;
             desired.Hotkey = binding ?? HotkeyBinding.Empty;
+            return Apply(desired);
+        }
+
+        /// <summary>Switches the tray icon on or off, leaving everything else as it is.</summary>
+        public AutoLockResult SetTrayIcon(bool enabled)
+        {
+            AutoLockSettings desired = GetSettings();
+            desired.TrayIconEnabled = enabled;
             return Apply(desired);
         }
 
@@ -862,6 +872,7 @@ namespace AFKLocker.Core
             AutoLockSettings off = settings.Clone();
             off.Mode = LockMode.Manual;
             off.HotkeyEnabled = false;
+            off.TrayIconEnabled = false;
             return off;
         }
     }

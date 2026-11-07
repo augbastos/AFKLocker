@@ -64,12 +64,16 @@ namespace AFKLocker.Core
                 RedirectStandardError = true
             }))
             {
-                error = process.StandardError.ReadToEnd().Trim();
+                // Read asynchronously: a blocking ReadToEnd would wait for the
+                // process to close its output and never reach the time limit.
+                System.Threading.Tasks.Task<string> errorText = process.StandardError.ReadToEndAsync();
                 if (!process.WaitForExit(10000))
                 {
+                    try { process.Kill(); } catch (Exception) { }
                     error = "Task Scheduler did not answer.";
                     return -1;
                 }
+                error = errorText.Result.Trim();
                 return process.ExitCode;
             }
         }

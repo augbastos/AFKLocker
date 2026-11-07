@@ -1,4 +1,5 @@
 using System;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -23,7 +24,8 @@ namespace AFKLocker.Watcher
     /// sitting there: manual locking with no hotkey stays exactly as
     /// non-resident as it has always been.
     ///
-    /// It has no window, no tray icon and no console. It does not poll - the
+    /// It has no window and no console, and no tray icon unless that option is
+    /// switched on. It does not poll - the
     /// process is blocked in the message loop until Windows posts an event - and
     /// it makes no network requests of any kind.
     ///
@@ -121,6 +123,7 @@ namespace AFKLocker.Watcher
 
             bool wantsLid = (features & HelperFeatures.LidLock) != 0;
             bool wantsHotkey = (features & HelperFeatures.GlobalHotkey) != 0;
+            bool wantsTray = (features & HelperFeatures.TrayIcon) != 0;
 
             bool createdNew;
             // One helper per session. A second launch - autostart plus a manual
@@ -219,8 +222,29 @@ namespace AFKLocker.Watcher
                             delegate { helperWindow.RequestClose(); };
                         SystemEvents.SessionEnding += endingHandler;
 
+                        NotifyIcon tray = null;
+                        Icon trayImage = null;
                         try
                         {
+                            // --- tray icon, when it is switched on -----------------
+                            // Created before the ready signal like every other
+                            // feature. A click goes through the same delegate
+                            // body as the hotkey, so the two cannot drift apart.
+                            if (wantsTray)
+                            {
+                                trayImage = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                                tray = new NotifyIcon
+                                {
+                                    Icon = trayImage,
+                                    Text = "AFKLocker - click to lock"
+                                };
+                                tray.MouseClick += delegate(object s, MouseEventArgs e)
+                                {
+                                    if (e.Button == MouseButtons.Left) screens.StartAndLock();
+                                };
+                                tray.Visible = true;
+                            }
+
                             TrimWorkingSet();
 
                             // Everything above succeeded: the slot is held, session
@@ -236,6 +260,15 @@ namespace AFKLocker.Watcher
                             // Stop claiming readiness the moment we start going away,
                             // so nothing sees a ready signal from a dying process.
                             readySignal.Reset();
+
+                            // Hidden before disposal, or Explorer keeps showing a
+                            // ghost icon until the mouse passes over it.
+                            if (tray != null)
+                            {
+                                tray.Visible = false;
+                                tray.Dispose();
+                            }
+                            if (trayImage != null) trayImage.Dispose();
 
                             SystemEvents.SessionEnding -= endingHandler;
                             registration2.Unregister(null);
@@ -390,10 +423,11 @@ namespace AFKLocker.Watcher
         private static string DescribeFeatures(HelperFeatures features)
         {
             if (features == HelperFeatures.None) return "nothing - the helper should not be running";
-            if (features == (HelperFeatures.LidLock | HelperFeatures.GlobalHotkey))
-                return "lid close and the global hotkey";
-            if ((features & HelperFeatures.LidLock) != 0) return "lid close";
-            return "the global hotkey";
+            var parts = new System.Collections.Generic.List<string>();
+            if ((features & HelperFeatures.LidLock) != 0) parts.Add("lid close");
+            if ((features & HelperFeatures.GlobalHotkey) != 0) parts.Add("the global hotkey");
+            if ((features & HelperFeatures.TrayIcon) != 0) parts.Add("the tray icon");
+            return string.Join(" and ", parts);
         }
 
         private static string DescribeState(WatcherState state)
@@ -422,7 +456,7 @@ namespace AFKLocker.Watcher
         {
             WriteLine("AFKLockerWatcher - the optional AFKLocker background helper.");
             WriteLine("");
-            WriteLine("It runs only while automatic locking or the global hotkey is switched on,");
+            WriteLine("It runs only while automatic locking, the global hotkey or the tray icon is switched on,");
             WriteLine("and registers only what those need. It does not watch the keyboard: the");
             WriteLine("hotkey is a RegisterHotKey reservation for one combination.");
             WriteLine("");

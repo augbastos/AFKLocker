@@ -302,7 +302,9 @@ the first power-plan write. A file lock prevents overlapping AFKLocker processes
 from overwriting that snapshot. If the owning process is killed, the OS releases
 the lock and the next activation restores the stale values before capturing a
 new session. Automatic lid-triggered mode remains explicitly persistent because
-Windows needs the lid action configured before the close event arrives.
+Windows needs the lid action configured before the close event arrives. The session that
+starts on a lid close locks nothing itself and does not enter this temporary mode, so the
+saved plan, and the battery choice in Setup, decide what happens on battery.
 
 "The next activation" may never come, and a restart for an update overnight
 ends the process without any cleanup. So each session also writes a one-shot
@@ -460,9 +462,10 @@ state, optionally exercises the watcher handshake, and returns a report.
 The rule that shapes the whole design: **a bundle is meant to be sent to a stranger.** So:
 
 - Every path goes through `PathRedactor` before it reaches the report. Known folders become
-  `%LOCALAPPDATA%` and friends; the user name is removed wherever it appears; and a path outside
-  every known folder is reduced to its file name, because a folder named after a person or a
-  client is exactly the kind of thing that would otherwise survive.
+  `%LOCALAPPDATA%` and friends; the user name is removed wherever it appears as a whole word;
+  a path outside every known folder is reduced to its file name; and below a known folder only the
+  file name survives too (AFKLocker's own install folders keep their shape), because a folder named
+  after a person or a client is exactly the kind of thing that would otherwise survive.
 - A **custom power plan's name is never reported** - only that it is custom. Users rename those,
   sometimes after themselves.
 - Manufacturer and model are opt-in and default to off.
@@ -527,7 +530,9 @@ event, repeats, opening, an already-locked session - so each one is a test rathe
   behaving strangely. They should be able to open it and understand it without tooling.
 - **One file per scheme** because a user can configure AFKLocker on Balanced, later switch to High
   performance and configure that too. Restore has to put each plan back the way it was, and has to
-  target the plan the backup came from rather than whichever is active at uninstall time.
+  target the plan the backup came from rather than whichever is active at uninstall time. It
+  re-activates that plan only when it is still the active one, so Restore never switches the
+  user's plan.
 - **First value wins.** `RecordOriginal` refuses to overwrite an existing entry. Running Setup a
   second time must not record the values AFKLocker itself just wrote, or restore would "restore"
   the machine to the configured state.

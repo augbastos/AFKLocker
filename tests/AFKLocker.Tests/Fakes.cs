@@ -153,6 +153,7 @@ namespace AFKLocker.Tests
                 ApplySchemeFailures--;
                 throw new InvalidOperationException(ApplySchemeFailsWith);
             }
+            ActiveScheme = scheme;
         }
     }
 

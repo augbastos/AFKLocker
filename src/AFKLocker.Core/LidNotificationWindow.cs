@@ -79,15 +79,6 @@ namespace AFKLocker.Core
         public event EventHandler HotkeyPressed;
 
         /// <summary>
-        /// True once Windows has actually reported a lid position. Registration
-        /// succeeds even on machines with no lid - the documentation is explicit
-        /// that the callback is not made "until a lid device is found and its
-        /// current state is known" - so this is the only honest way to tell
-        /// whether lid events work here.
-        /// </summary>
-        public bool HasSeenLidEvent { get; private set; }
-
-        /// <summary>
         /// Creates the window without subscribing to anything. Needed on its own
         /// by a helper that only wants the hotkey, which still needs a window
         /// for Windows to post WM_HOTKEY to.
@@ -209,8 +200,6 @@ namespace AFKLocker.Core
 
             int value = Marshal.ReadInt32(lParam, DataOffset);
             if (value != (int)LidState.Closed && value != (int)LidState.Opened) return;
-
-            HasSeenLidEvent = true;
 
             EventHandler<LidStateEventArgs> handler = LidStateChanged;
             if (handler != null)

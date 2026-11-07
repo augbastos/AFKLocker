@@ -72,9 +72,22 @@ namespace AFKLocker.Core
                 // Power first: from this point forward closing the lid cannot
                 // win a race with setup. Lock and issue the first display-off
                 // request before talking to optional keyboard firmware, which
-                // can be slow or unavailable.
-                power.Enter();
-                if (lockSession) locker.Lock();
+                // can be slow or unavailable. The lid path (lockSession false) is
+                // the Automatic mode: it leaves power alone so the "keep running
+                // on battery" choice made in Setup stays in charge. If Windows
+                // refuses the power change, the PC is still locked before the
+                // error is reported.
+                if (lockSession)
+                {
+                    try
+                    {
+                        power.Enter();
+                    }
+                    finally
+                    {
+                        locker.Lock();
+                    }
+                }
 
                 screens.Finished += session.OnScreensFinished;
                 if (!screens.Start())

@@ -75,6 +75,10 @@ namespace AFKLocker.Setup
         private readonly Button _hotkeyClear = new Button();
         private readonly Label _hotkeyNote = new Label();
         private readonly Label _hotkeyStatus = new Label();
+        private readonly Label _trayHeader = new Label();
+        private readonly CheckBox _trayCheck = new CheckBox();
+        private readonly Label _trayNote = new Label();
+        private readonly Label _trayStatus = new Label();
 
         private readonly Label _lightingHeader = new Label();
         private readonly CheckBox _lightingCheck = new CheckBox();
@@ -265,6 +269,20 @@ namespace AFKLocker.Setup
             _hotkeyStatus.MaximumSize = new Size(width - 20, 0);
             _hotkeyStatus.ForeColor = Color.FromArgb(94, 94, 94);
 
+            StyleSectionHeader(_trayHeader, "TRAY ICON");
+
+            _trayCheck.Text = "Show an icon next to the clock";
+            _trayCheck.AutoSize = true;
+            _trayCheck.CheckedChanged += OnTrayIconChanged;
+
+            StyleNote(_trayNote, width - 20,
+                "One click on the icon locks, like the hotkey. A small helper keeps the icon there while "
+                + "this is on. Windows 11 may first put a new icon behind the ^ arrow: drag it out once.");
+
+            _trayStatus.AutoSize = true;
+            _trayStatus.MaximumSize = new Size(width - 20, 0);
+            _trayStatus.ForeColor = Color.FromArgb(94, 94, 94);
+
             StyleSectionHeader(_lightingHeader, "KEYBOARD LIGHTING");
 
             _lightingCheck.Text = "Turn off keyboard lighting during AFK";
@@ -308,6 +326,7 @@ namespace AFKLocker.Setup
                 _batteryCheck, _batteryNote,
                 _lockHeader, _manualRadio, _manualNote, _automaticRadio, _automaticNote, _watcherStatus,
                 _hotkeyHeader, _hotkeyCheck, _hotkeyBox, _hotkeyClear, _hotkeyNote, _hotkeyStatus,
+                _trayHeader, _trayCheck, _trayNote, _trayStatus,
                 _lightingHeader, _lightingCheck, _lightingNote, _lightingStatus,
                 _applyButton, _restoreButton, _diagnosticsButton, _closeButton
             });
@@ -384,7 +403,19 @@ namespace AFKLocker.Setup
             y = _hotkeyNote.Bottom + 6;
 
             _hotkeyStatus.Location = new Point(left + 20, y);
-            int leftBottom = _hotkeyStatus.Bottom;
+            y = _hotkeyStatus.Bottom + SectionGap;
+
+            _trayHeader.Location = new Point(left, y);
+            y = _trayHeader.Bottom + 10;
+
+            _trayCheck.Location = new Point(left + 2, y);
+            y = _trayCheck.Bottom + 2;
+
+            _trayNote.Location = new Point(left + 20, y);
+            y = _trayNote.Bottom + 6;
+
+            _trayStatus.Location = new Point(left + 20, y);
+            int leftBottom = _trayStatus.Bottom;
 
             // --- right column: while you are away -----------------------------
             y = top;
@@ -606,6 +637,40 @@ namespace AFKLocker.Setup
                 : Color.FromArgb(94, 94, 94);
 
             RefreshHotkey(status);
+            RefreshTrayIcon(status);
+        }
+
+        private void RefreshTrayIcon(AutoLockStatus status)
+        {
+            _loading = true;
+            _trayCheck.Checked = status.TrayIconEnabled;
+            _loading = false;
+
+            _trayCheck.Enabled = status.WatcherInstalled && !_elevated;
+
+            if (_elevated)
+            {
+                _trayStatus.Text = ElevatedNote;
+                _trayStatus.ForeColor = Color.FromArgb(94, 94, 94);
+                return;
+            }
+
+            if (!status.WatcherInstalled)
+            {
+                _trayStatus.Text = "Unavailable: the AFKLocker helper was not found next to this program.";
+                _trayStatus.ForeColor = Color.FromArgb(196, 43, 28);
+                return;
+            }
+
+            bool broken = status.TrayIconEnabled && status.WatcherState != WatcherState.Ready;
+            _trayStatus.Text = !status.TrayIconEnabled
+                ? "Off."
+                : broken
+                    ? "On, but the helper is not ready, so the icon may be missing."
+                    : "On. Click the icon next to the clock to lock.";
+            _trayStatus.ForeColor = broken
+                ? Color.FromArgb(196, 43, 28)
+                : Color.FromArgb(94, 94, 94);
         }
 
         private void RefreshHotkey(AutoLockStatus status)
@@ -801,6 +866,28 @@ namespace AFKLocker.Setup
             catch (Exception ex)
             {
                 ShowMessage("Could not change the global hotkey.\r\n\r\n" + ex.Message,
+                    MessageBoxIcon.Warning);
+            }
+
+            RefreshLockBehaviour();
+        }
+
+        private void OnTrayIconChanged(object sender, EventArgs e)
+        {
+            if (_loading) return;
+
+            bool enabled = _trayCheck.Checked;
+            try
+            {
+                AutoLockResult result = _autoLock.SetTrayIcon(enabled);
+                if (!result.Success)
+                    ShowMessage(DescribeFailure(enabled
+                        ? "The tray icon could not be turned on."
+                        : "The tray icon could not be turned off.", result), MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                ShowMessage("Could not change the tray icon.\r\n\r\n" + ex.Message,
                     MessageBoxIcon.Warning);
             }
 
