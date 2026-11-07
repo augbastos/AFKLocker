@@ -13,8 +13,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - The hotkey and the double-click now lock the PC even when Windows refuses the temporary power change.
-- Automatic mode (lid close) now respects "Also keep running on battery": with the box off, the
-  laptop locks and then sleeps on battery as promised.
+- Automatic mode (lid close) now respects "Also keep running on battery": with the box off, AFKLocker
+  leaves your on-battery lid and sleep settings in charge instead of keeping the laptop awake.
 - Restore previous no longer switches your active power plan back to an older one.
 - A failed one-time cleanup of old 0.5.x settings no longer stops the double-click from locking.
 - Setup and diagnostics no longer say "closing the lid will not lock" on laptops that do report a

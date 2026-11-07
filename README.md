@@ -58,7 +58,7 @@ A small Windows utility that keeps your laptop working while you are away.
 
 Switch the opt-in ones on in **AFKLocker Setup**. The hotkey is a Windows registration, not a
 keyboard watcher: AFKLocker is told about that one combination and never sees any other key.
-Windows 11 first puts a new tray icon behind the "^" arrow: drag it out once, or turn it on in
+Windows 11 may first put a new tray icon behind the "^" arrow: drag it out once, or turn it on in
 Settings > Personalization > Taskbar > Other system tray icons.
 
 ## What it changes
