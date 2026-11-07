@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Tray icon** (Setup, off by default): an icon next to the clock that locks with one left click,
+  shown by the small helper.
+
 ## [0.6.0] - 2026-09-15
 
 ### Fixed

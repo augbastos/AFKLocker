@@ -54,9 +54,12 @@ A small Windows utility that keeps your laptop working while you are away.
 | **Manual** *(default)* | Double-click the icon | No |
 | **Hotkey** *(opt-in)* | A key combination you choose | A small helper, waiting for that key |
 | **Automatic** *(opt-in)* | Close the lid | A small helper, waiting for the lid |
+| **Tray icon** *(opt-in)* | Click the icon next to the clock | The small helper |
 
 Switch the opt-in ones on in **AFKLocker Setup**. The hotkey is a Windows registration, not a
 keyboard watcher: AFKLocker is told about that one combination and never sees any other key.
+Windows 11 first puts a new tray icon behind the "^" arrow: drag it out once, or turn it on in
+Settings > Personalization > Taskbar > Other system tray icons.
 
 ## What it changes
 

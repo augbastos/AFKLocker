@@ -177,6 +177,20 @@ namespace AFKLocker.Tests
                 "and one helper covers both");
         }
 
+        [Test("Only the tray icon switched on still needs the helper, in both copies of the rule")]
+        private static void TrayIconAloneNeedsTheHelper()
+        {
+            var settings = new AutoLockSettings { TrayIconEnabled = true };
+            Assert.Equal(HelperFeatures.TrayIcon, settings.RequiredFeatures, "settings copy");
+
+            var status = new AutoLockStatus { TrayIconEnabled = true };
+            Assert.Equal(HelperFeatures.TrayIcon, status.RequiredFeatures, "status copy");
+            Assert.True(status.HelperRequired, "so a helper has to exist");
+
+            AutoLockSettings restored = AutoLockSettings.Deserialize(settings.Serialize());
+            Assert.True(restored.TrayIconEnabled, "and the choice survives a save");
+        }
+
         [Test("An enabled hotkey with an unusable key asks for no helper work")]
         private static void UnusableHotkeyAsksForNothing()
         {

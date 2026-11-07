@@ -23,6 +23,9 @@ namespace AFKLocker.Core
         /// <summary>The chosen combination. Never null; empty means nothing chosen.</summary>
         public HotkeyBinding Hotkey { get; set; }
 
+        /// <summary>Whether the helper shows a notification-area icon that locks on click.</summary>
+        public bool TrayIconEnabled { get; set; }
+
         public AutoLockSettings()
         {
             // Manual with no hotkey is the default and stays the default. A
@@ -32,6 +35,7 @@ namespace AFKLocker.Core
             Mode = LockMode.Manual;
             HotkeyEnabled = false;
             Hotkey = HotkeyBinding.Empty;
+            TrayIconEnabled = false;
         }
 
         /// <summary>A copy, so callers can change one field without touching the stored object.</summary>
@@ -41,7 +45,8 @@ namespace AFKLocker.Core
             {
                 Mode = Mode,
                 HotkeyEnabled = HotkeyEnabled,
-                Hotkey = Hotkey ?? HotkeyBinding.Empty
+                Hotkey = Hotkey ?? HotkeyBinding.Empty,
+                TrayIconEnabled = TrayIconEnabled
             };
         }
 
@@ -61,6 +66,8 @@ namespace AFKLocker.Core
                 if (HotkeyEnabled && Hotkey != null && Hotkey.IsUsable)
                     features |= HelperFeatures.GlobalHotkey;
 
+                if (TrayIconEnabled) features |= HelperFeatures.TrayIcon;
+
                 return features;
             }
         }
@@ -75,6 +82,7 @@ namespace AFKLocker.Core
             text.AppendLine("lock-mode=" + (Mode == LockMode.Automatic ? "automatic" : "manual"));
             text.AppendLine("hotkey-enabled=" + (HotkeyEnabled ? "true" : "false"));
             text.AppendLine("hotkey=" + (Hotkey == null ? string.Empty : Hotkey.Serialize()));
+            text.AppendLine("tray-icon-enabled=" + (TrayIconEnabled ? "true" : "false"));
             return text.ToString();
         }
 
@@ -106,6 +114,9 @@ namespace AFKLocker.Core
 
                 if (key == "hotkey-enabled" && string.Equals(value, "true", StringComparison.OrdinalIgnoreCase))
                     settings.HotkeyEnabled = true;
+
+                if (key == "tray-icon-enabled" && string.Equals(value, "true", StringComparison.OrdinalIgnoreCase))
+                    settings.TrayIconEnabled = true;
 
                 if (key == "hotkey")
                 {

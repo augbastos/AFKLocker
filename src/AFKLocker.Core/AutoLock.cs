@@ -41,7 +41,10 @@ namespace AFKLocker.Core
         LidLock = 1,
 
         /// <summary>Lock when the registered key combination is pressed.</summary>
-        GlobalHotkey = 2
+        GlobalHotkey = 2,
+
+        /// <summary>Show the notification-area icon whose click locks.</summary>
+        TrayIcon = 4
     }
 
     public sealed class LidStateEventArgs : EventArgs
