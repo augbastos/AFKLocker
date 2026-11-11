@@ -10,6 +10,7 @@ A small Windows utility that keeps your laptop working while you are away.
 
 [![Build](https://github.com/augbastos/AFKLocker/actions/workflows/ci.yml/badge.svg)](https://github.com/augbastos/AFKLocker/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/augbastos/AFKLocker)](https://github.com/augbastos/AFKLocker/releases/latest)
 
 **[Download](https://github.com/augbastos/AFKLocker/releases/latest)** ·
 [How it works](docs/architecture.md) ·
@@ -21,6 +22,10 @@ A small Windows utility that keeps your laptop working while you are away.
 </div>
 
 ---
+
+## Status
+
+Windows only. Builds are not code-signed (see the SmartScreen note below).
 
 ## Quick start
 
@@ -78,7 +83,7 @@ Settings > Personalization > Taskbar > Other system tray icons.
 
 Display timeouts are never changed.
 
-## ⚠️ Safety
+## Safety
 
 **Never leave a running, lid-closed laptop in a bag, sleeve or drawer** — it keeps producing heat.
 A locked PC is still a running PC: AFKLocker does not protect against someone with physical access.
@@ -100,13 +105,51 @@ username, computer name, network addresses and files.
 
 ## Build from source
 
-Windows only — no SDK, no package restore.
+Windows only — no SDK, no package restore. The build uses the C# compiler that ships with
+.NET Framework 4.8 and writes to `build\`.
 
 ```powershell
 git clone https://github.com/augbastos/AFKLocker.git
 cd AFKLocker
 .\tools\Build.ps1 -Test
 ```
+
+`-Test` runs the test suite after the build. Other `tools\Build.ps1` options:
+
+- `-Installer` also builds the Inno Setup installer (needs `ISCC.exe`).
+- `-Sign` signs the binaries if a signing certificate is set in the environment; without one it
+  does nothing. See [docs/signing.md](docs/signing.md).
+
+## Test
+
+`.\tools\Build.ps1 -Test` runs the unit tests in `tests\AFKLocker.Tests` and is what CI runs.
+`tools\Check-Version.ps1` fails if the version differs between files. Three scripts check the real
+system and are not part of CI, because they write to the registry, start a process or change
+power settings on a throwaway plan. Run them after a build:
+
+```powershell
+.\tools\Test-Integration.ps1
+.\tools\Test-AutoLock-Integration.ps1
+.\tools\Test-Rollback-Integration.ps1
+```
+
+## Layout
+
+| Path | What is in it |
+|---|---|
+| `src/` | The three programs `AFKLocker.App`, `AFKLocker.Setup`, `AFKLocker.Watcher` and the shared library `AFKLocker.Core` |
+| `tests/` | Unit tests (`AFKLocker.Tests`) |
+| `tools/` | Build, version check, signing, icon and integration test scripts |
+| `installer/` | Inno Setup script for the installer |
+| `docs/` | [Architecture notes](docs/architecture.md) and [signing and release integrity](docs/signing.md) |
+| `assets/` | Icons and the flow diagram |
+| `.github/` | CI, release and safety workflows, issue templates |
+
+## Release
+
+Pushing a `v*` tag runs the release workflow. It builds, signs when certificate secrets exist, and
+publishes the installer, a portable zip, `SHA256SUMS.txt` and a build attestation. The portable zip
+holds the executables, `AFKLocker.Core.dll`, `LICENSE` and this README.
 
 ## License
 
