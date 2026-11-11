@@ -66,10 +66,6 @@ keyboard watcher: AFKLocker is told about that one combination and never sees an
 Windows 11 may first put a new tray icon behind the "^" arrow: drag it out once, or turn it on in
 Settings > Personalization > Taskbar > Other system tray icons.
 
-<p align="center">
-  <img src="assets/screenshot-setup.png" alt="The AFKLocker Setup window: closed-lid readiness checks, an option to keep running on battery, and the Manual and Automatic lock modes" width="360">
-</p>
-
 ## What it changes
 
 - **Manual and hotkey: no permanent power changes.** During a session the lid-close action is set to
@@ -141,12 +137,12 @@ power settings on a throwaway plan. Run them after a build:
 
 | Path | What is in it |
 |---|---|
-| `src/` | The four programs: `AFKLocker.App`, `AFKLocker.Setup`, `AFKLocker.Watcher` and the shared `AFKLocker.Core` |
+| `src/` | The three programs `AFKLocker.App`, `AFKLocker.Setup`, `AFKLocker.Watcher` and the shared library `AFKLocker.Core` |
 | `tests/` | Unit tests (`AFKLocker.Tests`) |
 | `tools/` | Build, version check, signing, icon and integration test scripts |
 | `installer/` | Inno Setup script for the installer |
 | `docs/` | [Architecture notes](docs/architecture.md) and [signing and release integrity](docs/signing.md) |
-| `assets/` | Icons, the flow diagram and the Setup screenshot |
+| `assets/` | Icons and the flow diagram |
 | `.github/` | CI, release and safety workflows, issue templates |
 
 ## Release
