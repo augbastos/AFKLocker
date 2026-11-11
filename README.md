@@ -25,7 +25,7 @@ A small Windows utility that keeps your laptop working while you are away.
 
 ## Status
 
-Version 0.7.0. Windows only. Builds are not code-signed (see the SmartScreen note below).
+Windows only. Builds are not code-signed (see the SmartScreen note below).
 
 ## Quick start
 
