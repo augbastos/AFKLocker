@@ -11,10 +11,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     name: Build and test
     runs-on: windows-latest
+    timeout-minutes: 2
     permissions:
       contents: read
 
@@ -34,12 +39,6 @@ jobs:
         shell: pwsh
         run: ./tools/Check-Version.ps1
 
-      # No signing in CI: nothing is published from here, so the signing
-      # secrets are not needed and are therefore not exposed.
-      - name: Build and run tests
-        shell: pwsh
-        run: ./tools/Build.ps1 -Test
-
       # Regenerating the icon from its vector definition must produce exactly
       # what is committed, otherwise the assets in the repo are not reproducible.
       - name: Verify icon assets are reproducible
@@ -54,9 +53,12 @@ jobs:
           }
           Write-Host "Icon assets match their vector source."
 
-      - name: Build installer
+      # Build once: the installer packages the same binaries the tests use.
+      # The native compiler needs no SDK installation or dependency restore.
+      # No signing secrets are needed because CI publishes no release.
+      - name: Build, run tests and build installer
         shell: pwsh
-        run: ./tools/Build.ps1 -Installer -Iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+        run: ./tools/Build.ps1 -Test -Installer -Iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
       - name: Upload build output
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
