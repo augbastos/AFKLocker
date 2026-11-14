@@ -226,7 +226,7 @@ $ErrorActionPreference = 'Stop'
 foreach ($eventName in 'pull_request', 'push', 'workflow_dispatch') {
   foreach ($safety in 'success', 'failure', 'skipped', 'cancelled') {
     foreach ($build in 'success', 'failure', 'skipped', 'cancelled') {
-      $expected = $build -eq 'success' -and ($safety -eq 'success' -or ($safety -eq 'skipped' -and $eventName -ne 'pull_request'))
+      $expected = $build -eq 'success' -and ($safety -eq 'success' -or ($safety -eq 'skipped' -and $eventName -eq 'push'))
       $env:EVENT_NAME = $eventName
       $env:NEEDS_JSON = @{ safety = @{ result = $safety }; build = @{ result = $build } } | ConvertTo-Json -Compress
       $passed = $true
