@@ -8,7 +8,7 @@
 
 A small Windows utility that keeps your laptop working while you are away.
 
-[![Build](https://github.com/augbastos/AFKLocker/actions/workflows/ci.yml/badge.svg)](https://github.com/augbastos/AFKLocker/actions/workflows/ci.yml)
+[![CI](https://github.com/augbastos/AFKLocker/actions/workflows/ci.yml/badge.svg)](https://github.com/augbastos/AFKLocker/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/augbastos/AFKLocker)](https://github.com/augbastos/AFKLocker/releases/latest)
 
@@ -123,6 +123,11 @@ cd AFKLocker
 ## Test
 
 `.\tools\Build.ps1 -Test` runs the unit tests in `tests\AFKLocker.Tests` and is what CI runs.
+The `CI` workflow reports `Safety`, `Build` and `CI passed`. Branch protection should require
+`Safety` and `CI passed`. Safety scans PR commits and checks critical paths using the base
+revision's policy. It runs only on pull requests; `CI passed` requires every job to succeed,
+except that Safety may be skipped on pushes and manual runs.
+
 `tools\Check-Version.ps1` fails if the version differs between files. Three scripts check the real
 system and are not part of CI, because they write to the registry, start a process or change
 power settings on a throwaway plan. Run them after a build:
@@ -143,7 +148,7 @@ power settings on a throwaway plan. Run them after a build:
 | `installer/` | Inno Setup script for the installer |
 | `docs/` | [Architecture notes](docs/architecture.md) and [signing and release integrity](docs/signing.md) |
 | `assets/` | Icons and the flow diagram |
-| `.github/` | CI, release and safety workflows, issue templates |
+| `.github/` | CI and release workflows, safety policy, issue templates |
 
 ## Release
 
