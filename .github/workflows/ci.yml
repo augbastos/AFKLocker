@@ -142,6 +142,6 @@ jobs:
           $jobs = ConvertFrom-Json $env:NEEDS_JSON
           foreach ($job in $jobs.PSObject.Properties) {
             if ($job.Value.result -eq 'success') { continue }
-            if ($job.Name -eq 'safety' -and $job.Value.result -eq 'skipped' -and $env:EVENT_NAME -ne 'pull_request') { continue }
+            if ($job.Name -eq 'safety' -and $job.Value.result -eq 'skipped' -and $env:EVENT_NAME -eq 'push') { continue }
             throw "Required job $($job.Name): $($job.Value.result)"
           }
